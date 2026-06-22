@@ -104,12 +104,10 @@ class FutuLiveGateway:
         self.state.update_order(order_from_vnpy(event.data))
 
     def _on_trade(self, event) -> None:
-        # 成交回报:若数据对象含 orderid 则复用 order_from_vnpy 更新订单维度;
-        # 持仓由独立的 EVENT_POSITION 事件维护,不在此处重复处理。
-        # 注:vnpy TradeData 与 OrderData 字段略有差异,本地联调时若 getattr 取值为空
-        # 请在 translate.order_from_vnpy 或此处增加专用 trade_from_vnpy 函数。
-        if hasattr(event.data, "orderid"):
-            self.state.update_order(order_from_vnpy(event.data))
+        # 成交回报暂不单独入 state:持仓由 EVENT_POSITION 维护,订单状态由 EVENT_ORDER 维护。
+        # 待新增专用 trade_from_vnpy 后再记录成交明细(TradeData 字段与 OrderData 不同,
+        # 直接复用 order_from_vnpy 会写入不完整订单)。
+        return
 
     def _on_tick(self, event) -> None:
         self.state.update_tick(tick_from_vnpy(event.data))
