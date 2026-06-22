@@ -7,11 +7,11 @@ import pandas as pd
 Fetcher = Callable[[str, str, str, str], pd.DataFrame]
 
 _COLUMN_ALIASES = {
-    "open": "open", "Open": "open",
-    "high": "high", "High": "high",
-    "low": "low", "Low": "low",
-    "close": "close", "Close": "close", "Adj Close": "close",
-    "volume": "volume", "Volume": "volume",
+    "Open": "open",
+    "High": "high",
+    "Low": "low",
+    "Close": "close", "Adj Close": "close",
+    "Volume": "volume",
 }
 _REQUIRED = ["open", "high", "low", "close", "volume"]
 
@@ -20,7 +20,7 @@ def _default_fetcher(symbol: str, market: str, start: str, end: str) -> pd.DataF
     if market == "US":
         import yfinance as yf
 
-        return yf.download(symbol, start=start, end=end, interval="1d", progress=False)
+        return yf.download(symbol, start=start, end=end, interval="1d", progress=False, auto_adjust=True)
     if market == "HK":
         import akshare as ak
 
@@ -43,6 +43,8 @@ def load_daily(
     fetch = fetcher or _default_fetcher
     raw = fetch(symbol, market, start, end)
     df = raw.rename(columns=_COLUMN_ALIASES)
+    # 防御性去重：任意来源若产生重复列名（如 Close+Adj Close 都映射为 close），保留第一列
+    df = df.loc[:, ~df.columns.duplicated()]
     df = df[[c for c in _REQUIRED if c in df.columns]].copy()
     missing = [c for c in _REQUIRED if c not in df.columns]
     if missing:
