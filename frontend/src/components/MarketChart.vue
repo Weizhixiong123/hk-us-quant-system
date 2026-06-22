@@ -26,13 +26,19 @@ function asTimestamp(time: string): Time {
 }
 
 function toChartData(candles: Candle[]): CandlestickData[] {
-  return candles.map((candle) => ({
-    time: asTimestamp(candle.time),
-    open: candle.open,
-    high: candle.high,
-    low: candle.low,
-    close: candle.close
-  }));
+  // lightweight-charts requires strictly ascending times — dedupe by time, keeping last
+  const seen = new Map<number, CandlestickData>();
+  for (const candle of candles) {
+    const ts = asTimestamp(candle.time);
+    seen.set(ts, {
+      time: ts,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close
+    });
+  }
+  return Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
 }
 
 function render() {

@@ -395,10 +395,16 @@ class AppState:
                 position.pnl_pct = round(position.pnl / basis * 100, 2)
             last = self.chart[-1]
             close = round(max(1, last.close * (1 + drift / 400)), 2)
+            # Parse last candle time and add 5 min — avoids collisions from same‑minute ticks.
+            parts = last.time.split(":")
+            h, m = int(parts[0]), int(parts[1])
+            next_min = h * 60 + m + 5
+            next_h, next_m = divmod(next_min, 60)
+            next_time = f"{next_h % 24:02d}:{next_m % 60:02d}"
             self.chart = [
                 *self.chart[1:],
                 Candle(
-                    time=self._now().strftime("%H:%M"),
+                    time=next_time,
                     open=last.close,
                     high=round(max(last.close, close) * 1.003, 2),
                     low=round(min(last.close, close) * 0.997, 2),
@@ -430,7 +436,12 @@ class AppState:
     def _build_chart(self) -> list[Candle]:
         candles: list[Candle] = []
         base = 198.0
-        start = datetime(2026, 6, 22, 9, 45, tzinfo=timezone.utc)
+        # Align last candle to the current 5‑minute boundary so tick() never collides.
+        now = self._now()
+        aligned = now.replace(second=0, microsecond=0)
+        aligned = aligned.replace(minute=(aligned.minute // 5) * 5)
+        # 64 bars, each 5 min apart, ending at `aligned`.
+        start = aligned - timedelta(minutes=5 * 63)
         for index in range(64):
             wave = math.sin(index / 5) * 1.8
             trend = index * 0.045
