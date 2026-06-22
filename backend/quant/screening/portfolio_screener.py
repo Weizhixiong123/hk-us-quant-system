@@ -12,7 +12,7 @@ from app.strategies.trend_portfolio import (
 )
 from quant.data.resample import resample_ohlcv
 from quant.indicators.macd import macd
-from quant.indicators.trend import sma
+from quant.indicators.trend import max_drawdown_pct, sma
 
 
 def _last(seq, default=0.0):
@@ -35,7 +35,10 @@ def build_trend_snapshot(
     price = _last(daily["close"].tolist())
 
     def safe_sma(values, period):
-        return sma(values, period) or 0.0
+        # 数据不足时返回 inf：使 "price > ma" 为 False，"ma5>ma10>ma20" 链式比较为 False，
+        # 保守判不通过——无法确认条件成立时宁可拦截。
+        result = sma(values, period)
+        return result if result is not None else float("inf")
 
     # 周线高低点抬高:用最近两段窗口的极值比较
     def rising(values):
@@ -56,22 +59,9 @@ def build_trend_snapshot(
         ma20_week=safe_sma(w_close, 20),
         weekly_highs_rising=rising(w_high),
         weekly_lows_rising=rising(w_low),
-        max_drawdown_3m_pct=_recent_drawdown_pct(daily, days=63),
+        max_drawdown_3m_pct=max_drawdown_pct(daily["close"].tolist()[-63:]),
         short_term_gain_pct=_recent_gain_pct(daily, days=20),
     )
-
-
-def _recent_drawdown_pct(daily: pd.DataFrame, days: int) -> float:
-    closes = daily["close"].tolist()[-days:]
-    if not closes:
-        return 0.0
-    peak = closes[0]
-    dd = 0.0
-    for c in closes:
-        peak = max(peak, c)
-        if peak > 0:
-            dd = max(dd, (peak - c) / peak * 100)
-    return round(dd, 4)
 
 
 def _recent_gain_pct(daily: pd.DataFrame, days: int) -> float:
