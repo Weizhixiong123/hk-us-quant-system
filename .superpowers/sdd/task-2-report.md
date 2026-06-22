@@ -225,3 +225,115 @@ cd /www/hk-us-quant-system/backend && ./.venv/bin/python -m pytest -q
 - [x] 数据源层修复：`auto_adjust=True`
 - [x] 标准化层防御：`df.loc[:, ~df.columns.duplicated()]`
 - [x] `_COLUMN_ALIASES` 去除噪音恒等映射
+
+---
+
+## Fix: MultiIndex列与缺失行契约
+
+### 缺陷描述
+
+**Important 缺陷（yfinance MultiIndex 列）**：现代 yfinance（≥0.2.51）即使单标的也返回二级列索引，如 `('Close','AAPL')`。原有 `df.rename(columns=_COLUMN_ALIASES)` 用字符串键无法匹配元组列，rename 形同空操作，后续 `dropna(subset=["close"])` 因找不到列名 `"close"` 抛 `KeyError`，美股真实路径会崩。
+
+**Minor 契约缺口（无缺失行）**：绑定约束要求统一 OHLCV "无缺失行"，但原有 `dropna(subset=["close"])` 只检查 close 字段；volume 为 NaN 的行不会被剔除，违背契约。
+
+### 改动说明
+
+**文件 1: `backend/quant/data/loaders.py`**
+
+三处修改：
+
+1. **数据源层**（第 23 行）：`_default_fetcher` 美股分支加 `multi_level_index=False` 参数，让 yfinance 直接返回单级列名：
+   ```python
+   return yf.download(..., auto_adjust=True, multi_level_index=False)
+   ```
+
+2. **标准化层防御**（第 45-48 行）：在 `rename` 之前，若 `df.columns` 是 `pd.MultiIndex`，拍平为第 0 级，使任意数据源传入 MultiIndex 都能正确标准化：
+   ```python
+   if isinstance(raw.columns, pd.MultiIndex):
+       raw = raw.copy()
+       raw.columns = raw.columns.get_level_values(0)
+   ```
+
+3. **完善缺失行剔除**（第 58 行）：将 `dropna(subset=["close"])` 改为覆盖全部 OHLCV 字段：
+   ```python
+   df = df.dropna(subset=["open", "high", "low", "close", "volume"])
+   ```
+
+**文件 2: `backend/tests/quant/test_loaders.py`**
+
+新增两项回归测试：
+
+- **测试 A** `test_load_daily_flattens_multiindex_columns`：注入返回 `pd.MultiIndex.from_tuples([("Open","AAPL"),("High","AAPL"),("Low","AAPL"),("Close","AAPL"),("Volume","AAPL")])` 的 stub fetcher，断言不抛异常且输出列恰为 `["open","high","low","close","volume"]`。
+- **测试 B** `test_load_daily_drops_row_with_volume_nan`：注入某行 `volume` 为 NaN（close 正常）的 stub，断言该行被剔除（`len(df)==2`）且剩余行 volume 均非空。
+
+### 测试命令与完整输出
+
+#### TDD Step 1: 新增测试，先确认失败（复现缺陷）
+
+```bash
+cd /www/hk-us-quant-system/backend && ./.venv/bin/python -m pytest tests/quant/test_loaders.py -v
+```
+
+**输出（修复前）**：
+```
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-9.1.1, pluggy-1.6.0 -- /www/hk-us-quant-system/backend/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /www/hk-us-quant-system/backend
+collecting ... collected 5 items
+
+tests/quant/test_loaders.py::test_load_daily_normalizes_and_sorts PASSED [ 20%]
+tests/quant/test_loaders.py::test_load_daily_passes_args_to_fetcher PASSED [ 40%]
+tests/quant/test_loaders.py::test_load_daily_deduplicates_close_column PASSED [ 60%]
+tests/quant/test_loaders.py::test_load_daily_flattens_multiindex_columns FAILED [ 80%]
+tests/quant/test_loaders.py::test_load_daily_drops_row_with_volume_nan FAILED [100%]
+
+FAILED tests/quant/test_loaders.py::test_load_daily_flattens_multiindex_columns - KeyError: ['close']
+FAILED tests/quant/test_loaders.py::test_load_daily_drops_row_with_volume_nan - AssertionError: assert 3 == 2
+
+========================= 2 failed, 3 passed in 1.29s ==========================
+```
+
+#### TDD Step 2: 实施修复，确认全部通过
+
+```bash
+cd /www/hk-us-quant-system/backend && ./.venv/bin/python -m pytest tests/quant/test_loaders.py -v
+```
+
+**输出（修复后）**：
+```
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-9.1.1, pluggy-1.6.0 -- /www/hk-us-quant-system/backend/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /www/hk-us-quant-system/backend
+collecting ... collected 5 items
+
+tests/quant/test_loaders.py::test_load_daily_normalizes_and_sorts PASSED [ 20%]
+tests/quant/test_loaders.py::test_load_daily_passes_args_to_fetcher PASSED [ 40%]
+tests/quant/test_loaders.py::test_load_daily_deduplicates_close_column PASSED [ 60%]
+tests/quant/test_loaders.py::test_load_daily_flattens_multiindex_columns PASSED [ 80%]
+tests/quant/test_loaders.py::test_load_daily_drops_row_with_volume_nan PASSED [100%]
+
+============================== 5 passed in 0.70s ===============================
+```
+
+#### TDD Step 3: 全套回归（无回归）
+
+```bash
+cd /www/hk-us-quant-system/backend && ./.venv/bin/python -m pytest -q
+```
+
+**输出**：
+```
+...........................                                              [100%]
+27 passed in 0.96s
+```
+
+### 验证清单
+- [x] 测试 A 先失败（复现 MultiIndex KeyError）
+- [x] 测试 B 先失败（volume NaN 行未被剔除）
+- [x] 数据源层修复：`multi_level_index=False`
+- [x] 标准化层防御：`get_level_values(0)` 拍平 MultiIndex
+- [x] 缺失行契约完善：`dropna` 覆盖全部 OHLCV 字段
+- [x] 修复后 5 项 loader 测试全部通过
+- [x] 全套 27 项测试通过（无回归）
