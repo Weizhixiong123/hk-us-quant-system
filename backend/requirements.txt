@@ -6,3 +6,5 @@ numpy>=2.0.0
 pandas>=2.2.0
 yfinance>=0.2.40
 akshare>=1.14.0
+vnpy>=3.9.0
+vnpy_futu>=1.0.0
