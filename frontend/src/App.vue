@@ -14,10 +14,12 @@ import MarketChart from "./components/MarketChart.vue";
 import PositionsTable from "./components/PositionsTable.vue";
 import StrategyCard from "./components/StrategyCard.vue";
 import { useDashboard } from "./composables/useDashboard";
+import type { EquityPoint } from "./api/types";
 
 const {
   account,
   backtest,
+  backtests,
   chart,
   dashboard,
   error,
@@ -28,12 +30,23 @@ const {
   risk,
   runBacktest,
   saveParam,
+  selectBacktest,
   signals,
   strategies,
   streamState,
   toggleStrategy,
   watchlist
 } = useDashboard();
+
+const selectedEquity = computed(() => {
+  const curve = backtest.value?.equity_curve ?? [];
+  if (curve.length === 0) {
+    return null;
+  }
+  return curve[curve.length - 1].equity;
+});
+
+const equityPolyline = computed(() => buildEquityPolyline(backtest.value?.equity_curve ?? []));
 
 const streamLabel = computed(() => {
   switch (streamState.value) {
@@ -46,6 +59,25 @@ const streamLabel = computed(() => {
   }
 });
 
+function buildEquityPolyline(curve: EquityPoint[]): string {
+  if (curve.length < 2) {
+    return "";
+  }
+
+  const values = curve.map((point) => point.equity);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+
+  return curve
+    .map((point, index) => {
+      const x = (index / (curve.length - 1)) * 100;
+      const y = 36 - ((point.equity - min) / range) * 32 - 2;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
 function money(value: number): string {
   return new Intl.NumberFormat("zh-CN", {
     maximumFractionDigits: 0
@@ -54,6 +86,10 @@ function money(value: number): string {
 
 function pct(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function strategyName(strategyId: string): string {
+  return strategies.value.find((strategy) => strategy.id === strategyId)?.name ?? strategyId;
 }
 
 function toneClass(value: number): "gain" | "loss" {
@@ -218,7 +254,10 @@ function time(value?: string): string {
           <LineChart :size="19" />
         </header>
         <div v-if="backtest" class="backtest-result">
-          <strong>{{ backtest.id }} · {{ backtest.market }}</strong>
+          <div class="backtest-heading">
+            <strong>{{ backtest.id }} · {{ backtest.market }}</strong>
+            <span>{{ time(backtest.created_at) }}</span>
+          </div>
           <dl>
             <div>
               <dt>收益</dt>
@@ -237,7 +276,27 @@ function time(value?: string): string {
               <dd>{{ backtest.win_rate_pct.toFixed(2) }}%</dd>
             </div>
           </dl>
+          <div v-if="equityPolyline" class="equity-sparkline">
+            <svg viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">
+              <polyline :points="equityPolyline" />
+            </svg>
+            <span v-if="selectedEquity !== null">资金 {{ money(selectedEquity) }}</span>
+          </div>
           <p v-for="note in backtest.notes" :key="note">{{ note }}</p>
+          <div v-if="backtests.length" class="backtest-history">
+            <button
+              v-for="item in backtests"
+              :key="item.id"
+              type="button"
+              class="history-row"
+              :class="{ active: backtest.id === item.id }"
+              @click="selectBacktest(item)"
+            >
+              <span>{{ strategyName(item.strategy_id) }}</span>
+              <strong :class="toneClass(item.total_return_pct)">{{ pct(item.total_return_pct) }}</strong>
+              <small>{{ item.market }} · {{ time(item.created_at) }}</small>
+            </button>
+          </div>
         </div>
         <div v-else class="empty-state">
           <strong>等待回测任务</strong>
@@ -247,5 +306,4 @@ function time(value?: string): string {
     </section>
   </main>
 </template>
-
 

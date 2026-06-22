@@ -48,6 +48,10 @@ export function updateStrategyParams(
   });
 }
 
+export function fetchBacktests(limit = 20): Promise<BacktestResult[]> {
+  return request<BacktestResult[]>(`/backtests?limit=${limit}`);
+}
+
 export function createBacktest(payload: BacktestRequest): Promise<BacktestResult> {
   return request<BacktestResult>("/backtests", {
     method: "POST",
@@ -62,5 +66,4 @@ export function streamUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   return `${protocol}://${window.location.host}${API_BASE}/ws/stream`;
 }
-
 

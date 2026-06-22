@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   createBacktest,
+  fetchBacktests,
   fetchDashboard,
   streamUrl,
   toggleStrategy as toggleStrategyRequest,
@@ -20,6 +21,7 @@ export function useDashboard() {
   const error = ref<string | null>(null);
   const streamState = ref<"connecting" | "live" | "offline">("offline");
   const backtest = ref<BacktestResult | null>(null);
+  const backtests = ref<BacktestResult[]>([]);
   let socket: WebSocket | null = null;
 
   const account = computed(() => dashboard.value?.account ?? null);
@@ -44,6 +46,17 @@ export function useDashboard() {
     }
   }
 
+  async function loadBacktests() {
+    try {
+      backtests.value = await fetchBacktests();
+      if (!backtest.value) {
+        backtest.value = backtests.value[0] ?? null;
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "回测历史加载失败";
+    }
+  }
+
   async function toggleStrategy(strategy: StrategyConfig) {
     const updated = await toggleStrategyRequest(strategy.id, !strategy.enabled);
     patchStrategy(updated);
@@ -55,15 +68,30 @@ export function useDashboard() {
   }
 
   async function runBacktest(strategyId: string, market: Market) {
-    backtest.value = await createBacktest({
-      strategy_id: strategyId,
-      market,
-      start_date: "2024-01-01",
-      end_date: "2026-06-21",
-      symbols: [],
-      initial_capital: 1_000_000
-    });
-    await load();
+    error.value = null;
+    try {
+      const result = await createBacktest({
+        strategy_id: strategyId,
+        market,
+        start_date: "2024-01-01",
+        end_date: "2026-06-21",
+        symbols: [],
+        initial_capital: 1_000_000
+      });
+      backtest.value = result;
+      backtests.value = [
+        result,
+        ...backtests.value.filter((item) => item.id !== result.id)
+      ].slice(0, 20);
+      await loadBacktests();
+      await load();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "回测失败";
+    }
+  }
+
+  function selectBacktest(result: BacktestResult) {
+    backtest.value = result;
   }
 
   function connectStream() {
@@ -100,6 +128,7 @@ export function useDashboard() {
 
   onMounted(async () => {
     await load();
+    await loadBacktests();
     connectStream();
   });
 
@@ -110,6 +139,7 @@ export function useDashboard() {
   return {
     account,
     backtest,
+    backtests,
     chart,
     dashboard,
     error,
@@ -121,6 +151,7 @@ export function useDashboard() {
     risk,
     runBacktest,
     saveParam,
+    selectBacktest,
     signals,
     strategies,
     streamState,

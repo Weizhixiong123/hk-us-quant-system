@@ -13,8 +13,10 @@ from app.models.schemas import (
     Candle,
     DashboardSnapshot,
     Order,
+    ParamValue,
     Position,
     RiskRuleStatus,
+    Severity,
     Signal,
     StrategyConfig,
     TradeLog,
@@ -339,39 +341,62 @@ class AppState:
 
     def run_backtest(self, request: BacktestRequest) -> BacktestResult:
         strategy = self._find_strategy(request.strategy_id)
-        seed = sum(ord(char) for char in request.strategy_id + request.market)
-        rng = random.Random(seed)
-        if request.strategy_id == "intraday_macd":
-            base_return, drawdown, sharpe, win_rate, trades = 8.6, 5.4, 1.18, 54.2, 312
-            notes = [
-                "使用模拟成交与固定滑点，暂不代表实盘收益。",
-                "背离阈值与绿柱缩短根数仍需在参数优化阶段复核。",
-            ]
-        else:
-            base_return, drawdown, sharpe, win_rate, trades = 18.4, 11.7, 1.42, 61.5, 42
-            notes = [
-                "月度调仓与分批建仓逻辑已纳入骨架。",
-                "基本面数据源接入后需要替换当前筛选样例。",
-            ]
+        try:
+            from quant.backtest.service import run_backtest as run_quant_backtest
 
-        jitter = rng.uniform(-1.2, 1.2)
+            result = run_quant_backtest(request)
+        except ImportError as exc:
+            result = self._failed_backtest_result(
+                request,
+                f"回测依赖未安装：{exc.name or exc}。请先执行 pip install -r requirements.txt。",
+            )
+        except Exception as exc:
+            result = self._failed_backtest_result(request, f"回测失败：{exc}")
+
+        result = self._store_backtest_result(result)
         self._append_log(
             source="backtest",
             severity="info",
             message=f"{strategy.name} {request.market} 回测任务已生成。",
         )
+        return result
+
+    def list_backtests(self, limit: int = 20) -> list[BacktestResult]:
+        try:
+            from quant.backtest.store import list_backtest_results
+
+            return list_backtest_results(limit)
+        except Exception as exc:
+            self._append_log(
+                source="backtest",
+                severity="warning",
+                message=f"回测历史读取失败：{exc}",
+            )
+            return []
+
+    def _store_backtest_result(self, result: BacktestResult) -> BacktestResult:
+        try:
+            from quant.backtest.store import save_backtest_result
+
+            return save_backtest_result(result)
+        except Exception as exc:
+            result.notes.append(f"回测结果保存失败：{exc}")
+            return result
+
+    def _failed_backtest_result(self, request: BacktestRequest, note: str) -> BacktestResult:
         return BacktestResult(
             id=f"BT-{uuid4().hex[:8].upper()}",
             strategy_id=request.strategy_id,
             market=request.market,
             start_date=request.start_date,
             end_date=request.end_date,
-            total_return_pct=round(base_return + jitter, 2),
-            max_drawdown_pct=round(drawdown + abs(jitter) / 2, 2),
-            sharpe=round(sharpe + jitter / 10, 2),
-            win_rate_pct=round(win_rate + jitter, 2),
-            trades=trades + int(jitter * 7),
-            notes=notes,
+            total_return_pct=0.0,
+            max_drawdown_pct=0.0,
+            sharpe=0.0,
+            win_rate_pct=0.0,
+            trades=0,
+            equity_curve=[],
+            notes=[note],
         )
 
     def tick(self) -> DashboardSnapshot:
@@ -464,5 +489,4 @@ class AppState:
     @staticmethod
     def _now() -> datetime:
         return datetime.now(timezone.utc)
-
 

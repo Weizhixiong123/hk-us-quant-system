@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -144,17 +144,25 @@ class BacktestRequest(BaseModel):
     initial_capital: float = Field(default=1_000_000, gt=0)
 
 
+class EquityPoint(BaseModel):
+    time: str
+    equity: float
+    drawdown_pct: float
+
+
 class BacktestResult(BaseModel):
     id: str
     strategy_id: str
     market: Market
     start_date: str
     end_date: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     total_return_pct: float
     max_drawdown_pct: float
     sharpe: float
     win_rate_pct: float
     trades: int
+    equity_curve: list[EquityPoint] = Field(default_factory=list)
     notes: list[str]
 
 

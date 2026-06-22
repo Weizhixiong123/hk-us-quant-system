@@ -19,10 +19,10 @@ let chart: IChartApi | null = null;
 let series: ISeriesApi<"Candlestick"> | null = null;
 let observer: ResizeObserver | null = null;
 
-function asTimestamp(time: string): Time {
+function asTimestamp(time: string): number {
   const [hour, minute] = time.split(":").map(Number);
   const date = new Date(Date.UTC(2026, 5, 22, hour || 0, minute || 0, 0));
-  return Math.floor(date.getTime() / 1000) as Time;
+  return Math.floor(date.getTime() / 1000);
 }
 
 function toChartData(candles: Candle[]): CandlestickData[] {
@@ -31,14 +31,16 @@ function toChartData(candles: Candle[]): CandlestickData[] {
   for (const candle of candles) {
     const ts = asTimestamp(candle.time);
     seen.set(ts, {
-      time: ts,
+      time: ts as Time,
       open: candle.open,
       high: candle.high,
       low: candle.low,
       close: candle.close
     });
   }
-  return Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+  return Array.from(seen.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([, value]) => value);
 }
 
 function render() {

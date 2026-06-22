@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from app.models.schemas import (
     BacktestRequest,
@@ -92,6 +92,14 @@ def orders(request: Request) -> list[Order]:
 @router.get("/logs", response_model=list[TradeLog])
 def logs(request: Request) -> list[TradeLog]:
     return get_state(request).logs
+
+
+@router.get("/backtests", response_model=list[BacktestResult])
+def backtests(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[BacktestResult]:
+    return get_state(request).list_backtests(limit)
 
 
 @router.post("/backtests", response_model=BacktestResult)

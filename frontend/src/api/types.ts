@@ -124,17 +124,25 @@ export interface BacktestRequest {
   initial_capital: number;
 }
 
+export interface EquityPoint {
+  time: string;
+  equity: number;
+  drawdown_pct: number;
+}
+
 export interface BacktestResult {
   id: string;
   strategy_id: string;
   market: Market;
   start_date: string;
   end_date: string;
+  created_at: string;
   total_return_pct: number;
   max_drawdown_pct: number;
   sharpe: number;
   win_rate_pct: number;
   trades: number;
+  equity_curve: EquityPoint[];
   notes: string[];
 }
 
