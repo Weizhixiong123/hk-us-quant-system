@@ -19,11 +19,25 @@ class Bar:
 
 
 class BarAggregator:
-    def __init__(self, max_bars: int = 500) -> None:
+    def __init__(self, max_bars: int = 1500) -> None:
         self.max_bars = max_bars
         self._current: dict[str, Bar] = {}
         self._minute_bars: dict[str, list[Bar]] = {}
         self._seen_ticks: set[tuple[str, str, float, float]] = set()
+
+    def seed_minute_bars(self, symbol: str, bars: Iterable[Bar]) -> None:
+        existing = self._minute_bars.setdefault(symbol, [])
+        known_starts = {bar.start for bar in existing}
+        merged = list(existing)
+        for bar in bars:
+            if bar.start in known_starts:
+                continue
+            known_starts.add(bar.start)
+            merged.append(bar)
+        merged.sort(key=lambda item: item.start)
+        if len(merged) > self.max_bars:
+            merged = merged[len(merged) - self.max_bars:]
+        self._minute_bars[symbol] = merged
 
     def ingest_ticks(self, ticks: Iterable[GatewayTick]) -> None:
         for tick in ticks:
