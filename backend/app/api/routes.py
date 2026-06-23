@@ -29,10 +29,13 @@ def get_state(request: Request) -> AppState:
 
 @router.get("/health")
 def health(request: Request) -> dict[str, str]:
+    runtime = getattr(request.app.state, "live_runtime", None)
     return {
         "status": "ok",
         "service": request.app.title,
         "mode": "live-ready",
+        "runtime_enabled": str(bool(runtime and runtime.config.enabled)).lower(),
+        "runtime_dry_run": str(bool(runtime and runtime.config.dry_run)).lower(),
     }
 
 

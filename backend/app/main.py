@@ -1,21 +1,37 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import settings
 from app.services.state import AppState
+from quant.live.runtime import build_live_runtime_from_env
 from quant.live.state import LiveGatewayState
 
 
 def create_app() -> FastAPI:
+    live_state = LiveGatewayState()
+    live_runtime = build_live_runtime_from_env(live_state)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        await app.state.live_runtime.start()
+        try:
+            yield
+        finally:
+            await app.state.live_runtime.stop()
+
     app = FastAPI(
         title=settings.app_name,
         version=settings.api_version,
         description="FastAPI service for the HK/US dual-strategy quant system.",
+        lifespan=lifespan,
     )
-    app.state.live_state = LiveGatewayState()
+    app.state.live_state = live_state
+    app.state.live_runtime = live_runtime
     app.state.quant_state = AppState(app.state.live_state)
     app.add_middleware(
         CORSMiddleware,
