@@ -1,7 +1,16 @@
 from types import SimpleNamespace
+
 from quant.live.translate import (
-    GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick,
-    account_from_vnpy, order_from_vnpy, position_from_vnpy, tick_from_vnpy,
+    GatewayAccount,
+    GatewayOrder,
+    GatewayPosition,
+    GatewayTick,
+    GatewayTrade,
+    account_from_vnpy,
+    order_from_vnpy,
+    position_from_vnpy,
+    tick_from_vnpy,
+    trade_from_vnpy,
 )
 
 
@@ -31,8 +40,33 @@ def test_order_from_vnpy():
     assert o.order_id == "ORD1" and o.status == "提交中" and o.offset == "开"
 
 
+def test_trade_from_vnpy():
+    obj = SimpleNamespace(
+        tradeid="TRD1",
+        orderid="ORD1",
+        symbol="00700",
+        direction=_Enum("多"),
+        offset=_Enum("开"),
+        price=389.4,
+        volume=100,
+        datetime=SimpleNamespace(isoformat=lambda: "2026-06-23T10:30:00"),
+    )
+    trade = trade_from_vnpy(obj)
+    assert trade == GatewayTrade(
+        trade_id="TRD1",
+        order_id="ORD1",
+        symbol="00700",
+        direction="多",
+        offset="开",
+        price=389.4,
+        volume=100,
+        time="2026-06-23T10:30:00",
+    )
+
+
 def test_tick_from_vnpy_formats_time():
     obj = SimpleNamespace(symbol="AAPL", last_price=201.1, volume=1000,
                           datetime=SimpleNamespace(isoformat=lambda: "2026-06-22T10:00:00"))
     t = tick_from_vnpy(obj)
     assert t == GatewayTick(symbol="AAPL", last_price=201.1, volume=1000, time="2026-06-22T10:00:00")
+

@@ -85,6 +85,17 @@ export interface Order {
   created_at: string;
 }
 
+export interface Trade {
+  id: string;
+  order_id: string;
+  symbol: string;
+  market: Market;
+  side: "buy" | "sell" | "short" | "cover";
+  quantity: number;
+  price: number;
+  traded_at: string;
+}
+
 export interface TradeLog {
   id: string;
   time: string;
@@ -111,6 +122,7 @@ export interface DashboardSnapshot {
   watchlist: WatchSymbol[];
   signals: Signal[];
   orders: Order[];
+  trades: Trade[];
   logs: TradeLog[];
   chart: Candle[];
 }

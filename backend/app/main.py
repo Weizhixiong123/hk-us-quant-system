@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.core.config import settings
 from app.services.state import AppState
+from quant.live.state import LiveGatewayState
 
 
 def create_app() -> FastAPI:
@@ -14,7 +15,8 @@ def create_app() -> FastAPI:
         version=settings.api_version,
         description="FastAPI service for the HK/US dual-strategy quant system.",
     )
-    app.state.quant_state = AppState()
+    app.state.live_state = LiveGatewayState()
+    app.state.quant_state = AppState(app.state.live_state)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -36,4 +38,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

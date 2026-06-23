@@ -1,5 +1,5 @@
 from quant.live.state import LiveGatewayState
-from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick
+from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 
 
 def test_connection_flag():
@@ -20,12 +20,17 @@ def test_position_upsert_and_remove_on_zero():
     assert s.snapshot()["positions"] == []
 
 
-def test_order_and_tick_upsert():
+def test_order_trade_and_tick_upsert():
     s = LiveGatewayState()
     s.update_order(GatewayOrder("O1", "AAPL", "多", "开", 198.4, 400, 0, "提交中"))
     s.update_order(GatewayOrder("O1", "AAPL", "多", "开", 198.4, 400, 400, "全部成交"))
     assert len(s.snapshot()["orders"]) == 1
     assert s.snapshot()["orders"][0].status == "全部成交"
+
+    s.update_trade(GatewayTrade("T1", "O1", "AAPL", "多", "开", 198.5, 400, "t1"))
+    assert len(s.snapshot()["trades"]) == 1
+    assert s.snapshot()["trades"][0].trade_id == "T1"
+
     s.update_tick(GatewayTick("AAPL", 201.1, 1000, "t1"))
     s.update_tick(GatewayTick("AAPL", 202.0, 1100, "t2"))
     assert len(s.snapshot()["ticks"]) == 1
@@ -36,3 +41,4 @@ def test_account_update():
     s = LiveGatewayState()
     s.update_account(GatewayAccount("ACC1", 100000.0, 80000.0, 20000.0))
     assert s.snapshot()["account"].available == 80000.0
+

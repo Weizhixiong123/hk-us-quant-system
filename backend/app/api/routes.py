@@ -14,6 +14,7 @@ from app.models.schemas import (
     StrategyConfig,
     StrategyParamsUpdate,
     StrategyToggleRequest,
+    Trade,
     TradeLog,
     WatchSymbol,
 )
@@ -31,7 +32,7 @@ def health(request: Request) -> dict[str, str]:
     return {
         "status": "ok",
         "service": request.app.title,
-        "mode": "simulated",
+        "mode": "live-ready",
     }
 
 
@@ -71,7 +72,7 @@ def update_strategy_params(
 
 @router.get("/positions", response_model=list[Position])
 def positions(request: Request) -> list[Position]:
-    return get_state(request).positions
+    return get_state(request).current_positions()
 
 
 @router.get("/watchlist", response_model=list[WatchSymbol])
@@ -86,12 +87,17 @@ def signals(request: Request) -> list[Signal]:
 
 @router.get("/orders", response_model=list[Order])
 def orders(request: Request) -> list[Order]:
-    return get_state(request).orders
+    return get_state(request).current_orders()
+
+
+@router.get("/trades", response_model=list[Trade])
+def trades(request: Request) -> list[Trade]:
+    return get_state(request).current_trades()
 
 
 @router.get("/logs", response_model=list[TradeLog])
 def logs(request: Request) -> list[TradeLog]:
-    return get_state(request).logs
+    return get_state(request).current_logs()
 
 
 @router.get("/backtests", response_model=list[BacktestResult])

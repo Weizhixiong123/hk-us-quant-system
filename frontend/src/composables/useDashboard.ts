@@ -31,6 +31,7 @@ export function useDashboard() {
   const watchlist = computed(() => dashboard.value?.watchlist ?? []);
   const signals = computed(() => dashboard.value?.signals ?? []);
   const orders = computed(() => dashboard.value?.orders ?? []);
+  const trades = computed(() => dashboard.value?.trades ?? []);
   const logs = computed(() => dashboard.value?.logs ?? []);
   const chart = computed(() => dashboard.value?.chart ?? []);
 
@@ -156,6 +157,7 @@ export function useDashboard() {
     strategies,
     streamState,
     toggleStrategy,
+    trades,
     watchlist
   };
 }

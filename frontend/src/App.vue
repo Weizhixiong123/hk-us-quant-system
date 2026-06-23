@@ -13,6 +13,7 @@ import EventFeed from "./components/EventFeed.vue";
 import MarketChart from "./components/MarketChart.vue";
 import PositionsTable from "./components/PositionsTable.vue";
 import StrategyCard from "./components/StrategyCard.vue";
+import TradesTape from "./components/TradesTape.vue";
 import { useDashboard } from "./composables/useDashboard";
 import type { EquityPoint } from "./api/types";
 
@@ -35,6 +36,7 @@ const {
   strategies,
   streamState,
   toggleStrategy,
+  trades,
   watchlist
 } = useDashboard();
 
@@ -209,6 +211,11 @@ function time(value?: string): string {
           <Database :size="19" />
         </header>
         <PositionsTable :positions="positions" />
+        <div class="subsection-title">
+          <p class="eyebrow">FILLS</p>
+          <h3>成交</h3>
+        </div>
+        <TradesTape :trades="trades" />
       </article>
 
       <article class="panel">

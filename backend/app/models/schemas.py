@@ -97,6 +97,17 @@ class Order(BaseModel):
     created_at: datetime
 
 
+class Trade(BaseModel):
+    id: str
+    order_id: str
+    symbol: str
+    market: Market
+    side: Literal["buy", "sell", "short", "cover"]
+    quantity: int
+    price: float
+    traded_at: datetime
+
+
 class TradeLog(BaseModel):
     id: str
     time: datetime
@@ -123,6 +134,7 @@ class DashboardSnapshot(BaseModel):
     watchlist: list[WatchSymbol]
     signals: list[Signal]
     orders: list[Order]
+    trades: list[Trade]
     logs: list[TradeLog]
     chart: list[Candle]
 

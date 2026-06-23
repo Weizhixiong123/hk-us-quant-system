@@ -28,6 +28,7 @@ const PARAM_LABELS: Record<string, string> = {
   target_positions_min: "目标持仓下限",
   target_positions_max: "目标持仓上限",
   max_symbol_drawdown_pct: "单标的最大回撤(%)",
+  first_entry_fraction_pct: "首次建仓比例(%)",
   rebalance_months: "调仓周期(月)",
   hot_gain_block_pct: "禁买涨幅阈值(%)"
 };

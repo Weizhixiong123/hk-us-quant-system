@@ -19,15 +19,18 @@ from app.models.schemas import (
     Severity,
     Signal,
     StrategyConfig,
+    Trade,
     TradeLog,
     WatchSymbol,
 )
+from quant.live.state import LiveGatewayState
 
 
 class AppState:
-    def __init__(self) -> None:
+    def __init__(self, live_state: LiveGatewayState | None = None) -> None:
         self._lock = RLock()
         self._rng = random.Random(42)
+        self.live_state = live_state
         now = self._now()
         self.account = AccountSummary(
             total_equity=1_285_000,
@@ -80,6 +83,7 @@ class AppState:
                     "target_positions_min": 5,
                     "target_positions_max": 8,
                     "max_symbol_drawdown_pct": 18.0,
+                    "first_entry_fraction_pct": 60.0,
                     "rebalance_months": 6,
                     "hot_gain_block_pct": 40.0,
                 },
@@ -239,6 +243,7 @@ class AppState:
                 created_at=now - timedelta(days=18),
             ),
         ]
+        self.trades: list[Trade] = []
         self.logs = [
             TradeLog(
                 id="LOG-4011",
@@ -266,24 +271,35 @@ class AppState:
 
     def dashboard(self) -> DashboardSnapshot:
         with self._lock:
+            live_snapshot = self._live_snapshot()
             return DashboardSnapshot(
                 server_time=self._now(),
-                account=self.account,
-                risk=self.risk_status(),
+                account=self._live_account(live_snapshot) or self.account,
+                risk=self.risk_status(live_snapshot),
                 strategies=self.strategies,
-                positions=self.positions,
+                positions=self._live_positions(live_snapshot) or self.positions,
                 watchlist=self.watchlist,
                 signals=self.signals,
-                orders=self.orders,
-                logs=self.logs,
+                orders=self._live_orders(live_snapshot) or self.orders,
+                trades=self._live_trades(live_snapshot) or self.trades,
+                logs=self._live_logs(live_snapshot) + self.logs,
                 chart=self.chart,
             )
 
-    def risk_status(self) -> list[RiskRuleStatus]:
+    def risk_status(self, live_snapshot: dict | None = None) -> list[RiskRuleStatus]:
         intraday_positions = sum(
             1 for position in self.positions if position.strategy_id == "intraday_macd"
         )
+        live_snapshot = live_snapshot if live_snapshot is not None else self._live_snapshot()
+        gateway_connected = bool(live_snapshot and live_snapshot.get("connected"))
+        gateway_detail = str(live_snapshot.get("detail", "")) if live_snapshot else "未初始化实盘网关"
         return [
+            RiskRuleStatus(
+                code="broker_connection",
+                name="富途连接",
+                status="pass" if gateway_connected else "blocked",
+                detail=gateway_detail or ("已连接" if gateway_connected else "未连接"),
+            ),
             RiskRuleStatus(
                 code="daily_loss",
                 name="单日最大亏损",
@@ -300,7 +316,7 @@ class AppState:
                 code="pdt",
                 name="美股 PDT",
                 status="pass",
-                detail="模拟环境剩余额度 3，实盘需接入账户权益校验。",
+                detail="滚动 5 个交易日额度已内置，账户类型与权益以券商回报为准。",
             ),
             RiskRuleStatus(
                 code="shortable",
@@ -309,6 +325,22 @@ class AppState:
                 detail="空头信号仅记录，等待券商可借券接口。",
             ),
         ]
+
+    def current_positions(self) -> list[Position]:
+        live_positions = self._live_positions(self._live_snapshot())
+        return live_positions or self.positions
+
+    def current_orders(self) -> list[Order]:
+        live_orders = self._live_orders(self._live_snapshot())
+        return live_orders or self.orders
+
+    def current_trades(self) -> list[Trade]:
+        live_trades = self._live_trades(self._live_snapshot())
+        return live_trades or self.trades
+
+    def current_logs(self) -> list[TradeLog]:
+        live_snapshot = self._live_snapshot()
+        return self._live_logs(live_snapshot) + self.logs
 
     def set_strategy_enabled(self, strategy_id: str, enabled: bool) -> StrategyConfig:
         with self._lock:
@@ -489,4 +521,151 @@ class AppState:
     @staticmethod
     def _now() -> datetime:
         return datetime.now(timezone.utc)
+
+    def _live_snapshot(self) -> dict | None:
+        if self.live_state is None:
+            return None
+        return self.live_state.snapshot()
+
+    def _live_account(self, snapshot: dict | None) -> AccountSummary | None:
+        account = snapshot.get("account") if snapshot else None
+        if account is None:
+            return None
+        return AccountSummary(
+            currency="HKD/USD",
+            total_equity=round(account.balance, 2),
+            cash=round(account.available, 2),
+            buying_power=round(account.available, 2),
+            day_pnl=0.0,
+            day_pnl_pct=0.0,
+            max_daily_loss_pct=self.account.max_daily_loss_pct,
+        )
+
+    def _live_positions(self, snapshot: dict | None) -> list[Position]:
+        if not snapshot:
+            return []
+        ticks = {tick.symbol: tick for tick in snapshot.get("ticks", [])}
+        positions: list[Position] = []
+        for item in snapshot.get("positions", []):
+            quantity = int(item.volume)
+            avg_price = float(item.price)
+            tick = ticks.get(item.symbol)
+            last_price = float(tick.last_price) if tick is not None and tick.last_price > 0 else avg_price
+            market_value = round(quantity * last_price, 2)
+            basis = quantity * avg_price
+            pnl = round(float(item.pnl) if item.pnl else market_value - basis, 2)
+            pnl_pct = round(pnl / basis * 100, 2) if basis > 0 else 0.0
+            positions.append(
+                Position(
+                    symbol=item.symbol,
+                    name=item.symbol,
+                    market=_market_from_symbol(item.symbol),
+                    strategy_id="live",
+                    side=_side_from_direction(item.direction),
+                    quantity=quantity,
+                    avg_price=avg_price,
+                    last_price=last_price,
+                    market_value=market_value,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    holding_days=0,
+                )
+            )
+        return positions
+
+    def _live_orders(self, snapshot: dict | None) -> list[Order]:
+        if not snapshot:
+            return []
+        return [
+            Order(
+                id=item.order_id,
+                strategy_id="live",
+                symbol=item.symbol,
+                market=_market_from_symbol(item.symbol),
+                side=_order_side(item.direction, item.offset),
+                quantity=int(item.volume),
+                price=float(item.price),
+                status=_order_status(item.status),
+                created_at=self._now(),
+            )
+            for item in snapshot.get("orders", [])
+        ]
+
+    def _live_trades(self, snapshot: dict | None) -> list[Trade]:
+        if not snapshot:
+            return []
+        trades: list[Trade] = []
+        for item in snapshot.get("trades", []):
+            traded_at = _parse_live_time(item.time, self._now())
+            trades.append(
+                Trade(
+                    id=item.trade_id or f"{item.order_id}:{item.symbol}",
+                    order_id=item.order_id,
+                    symbol=item.symbol,
+                    market=_market_from_symbol(item.symbol),
+                    side=_order_side(item.direction, item.offset),
+                    quantity=int(item.volume),
+                    price=float(item.price),
+                    traded_at=traded_at,
+                )
+            )
+        return trades
+
+    def _live_logs(self, snapshot: dict | None) -> list[TradeLog]:
+        if snapshot is None:
+            return []
+        connected = bool(snapshot.get("connected"))
+        detail = str(snapshot.get("detail", "")) or ("富途已连接" if connected else "富途未连接")
+        return [
+            TradeLog(
+                id="LIVE-GATEWAY",
+                time=self._now(),
+                source="gateway",
+                severity="info" if connected else "warning",
+                message=detail,
+            )
+        ]
+
+
+def _market_from_symbol(symbol: str) -> str:
+    value = symbol.upper()
+    if value.endswith(".HK") or value.startswith("HK.") or value.isdigit():
+        return "HK"
+    return "US"
+
+
+def _side_from_direction(direction: str) -> str:
+    value = direction.upper()
+    return "short" if "空" in direction or "SHORT" in value else "long"
+
+
+def _order_side(direction: str, offset: str) -> str:
+    is_short_direction = _side_from_direction(direction) == "short"
+    is_close = "平" in offset or "CLOSE" in offset.upper()
+    if is_close and is_short_direction:
+        return "sell"
+    if is_close:
+        return "cover"
+    return "short" if is_short_direction else "buy"
+
+
+def _order_status(status: str) -> str:
+    value = status.upper()
+    if "拒" in status or "REJECT" in value:
+        return "rejected"
+    if "撤" in status or "CANCEL" in value:
+        return "cancelled"
+    if "成交" in status or "FILLED" in value or "ALLTRADED" in value:
+        return "filled"
+    return "submitted"
+
+
+def _parse_live_time(value: str, fallback: datetime) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return fallback
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 

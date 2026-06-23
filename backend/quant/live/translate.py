@@ -43,6 +43,18 @@ class GatewayOrder:
 
 
 @dataclass(frozen=True)
+class GatewayTrade:
+    trade_id: str
+    order_id: str
+    symbol: str
+    direction: str
+    offset: str
+    price: float
+    volume: float
+    time: str
+
+
+@dataclass(frozen=True)
 class GatewayTick:
     symbol: str
     last_price: float
@@ -84,6 +96,19 @@ def order_from_vnpy(obj: object) -> GatewayOrder:
     )
 
 
+def trade_from_vnpy(obj: object) -> GatewayTrade:
+    return GatewayTrade(
+        trade_id=str(getattr(obj, "tradeid", "")),
+        order_id=str(getattr(obj, "orderid", "")),
+        symbol=str(getattr(obj, "symbol", "")),
+        direction=enum_value(getattr(obj, "direction", "")),
+        offset=enum_value(getattr(obj, "offset", "")),
+        price=float(getattr(obj, "price", 0.0)),
+        volume=float(getattr(obj, "volume", 0.0)),
+        time=_time_str(getattr(obj, "datetime", getattr(obj, "time", ""))),
+    )
+
+
 def tick_from_vnpy(obj: object) -> GatewayTick:
     return GatewayTick(
         symbol=str(getattr(obj, "symbol", "")),
@@ -91,3 +116,4 @@ def tick_from_vnpy(obj: object) -> GatewayTick:
         volume=float(getattr(obj, "volume", 0.0)),
         time=_time_str(getattr(obj, "datetime", "")),
     )
+

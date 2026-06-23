@@ -7,6 +7,7 @@ from quant.live.translate import (
     GatewayOrder,
     GatewayPosition,
     GatewayTick,
+    GatewayTrade,
 )
 
 
@@ -19,6 +20,7 @@ class LiveGatewayState:
         self._positions: dict[str, GatewayPosition] = {}
         self._orders: dict[str, GatewayOrder] = {}
         self._ticks: dict[str, GatewayTick] = {}
+        self._trades: dict[str, GatewayTrade] = {}
 
     def set_connected(self, connected: bool, detail: str = "") -> None:
         with self._lock:
@@ -45,6 +47,11 @@ class LiveGatewayState:
         with self._lock:
             self._orders[order.order_id] = order
 
+    def update_trade(self, trade: GatewayTrade) -> None:
+        with self._lock:
+            key = trade.trade_id or f"{trade.order_id}:{trade.symbol}:{len(self._trades)}"
+            self._trades[key] = trade
+
     def update_tick(self, tick: GatewayTick) -> None:
         with self._lock:
             self._ticks[tick.symbol] = tick
@@ -57,5 +64,7 @@ class LiveGatewayState:
                 "account": self._account,
                 "positions": list(self._positions.values()),
                 "orders": list(self._orders.values()),
+                "trades": list(self._trades.values()),
                 "ticks": list(self._ticks.values()),
             }
+
