@@ -17,3 +17,15 @@ def test_get_universe_unknown_market_raises():
 def test_all_symbols_covers_both_markets():
     markets = {i.market for i in all_symbols()}
     assert markets == {"HK", "US"}
+
+
+def test_symbol_info_defaults_not_shortable():
+    from quant.data.universe import SymbolInfo
+
+    assert SymbolInfo("TEST", "Test", "US").shortable is False
+
+
+def test_universe_has_some_shortable_symbols():
+    from quant.data.universe import all_symbols
+
+    assert any(item.shortable for item in all_symbols())

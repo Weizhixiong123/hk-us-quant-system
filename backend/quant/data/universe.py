@@ -11,16 +11,17 @@ class SymbolInfo:
     symbol: str
     name: str
     market: Market
+    shortable: bool = False
 
 
 _UNIVERSE: dict[str, list[SymbolInfo]] = {
     "US": [
-        SymbolInfo("AAPL", "Apple", "US"),
-        SymbolInfo("MSFT", "Microsoft", "US"),
+        SymbolInfo("AAPL", "Apple", "US", shortable=True),
+        SymbolInfo("MSFT", "Microsoft", "US", shortable=True),
         SymbolInfo("NVDA", "NVIDIA", "US"),
     ],
     "HK": [
-        SymbolInfo("0700.HK", "腾讯控股", "HK"),
+        SymbolInfo("0700.HK", "腾讯控股", "HK", shortable=True),
         SymbolInfo("9988.HK", "阿里巴巴-W", "HK"),
         SymbolInfo("3690.HK", "美团-W", "HK"),
     ],
