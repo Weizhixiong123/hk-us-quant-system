@@ -31,6 +31,7 @@ from quant.live.trend import (
     evaluate_trend_exit_signal,
 )
 from quant.indicators.macd import has_bearish_cross, has_bullish_cross, macd
+from quant.data.universe import all_symbols
 
 
 class RuntimeGateway(Protocol):
@@ -88,6 +89,7 @@ class LiveRuntime:
         self._running = False
         self._seeded_day = None
         self._seeded_symbols: set[str] = set()
+        self._shortable_symbols = {item.symbol.upper() for item in all_symbols() if item.shortable}
 
     async def start(self) -> None:
         if not self.config.enabled or self._running:
@@ -177,32 +179,37 @@ class LiveRuntime:
                 continue
             price = self.market_data.latest_price(symbol) or bars5[-1].close
             closes15 = [bar.close for bar in bars15]
-            signal = evaluate_intraday_entry_signal(
-                symbol=symbol,
-                market=market,
-                at=at,
-                closes_15m=closes15,
-                lows_15m=[bar.low for bar in bars15],
-                highs_15m=[bar.high for bar in bars15],
-                closes_5m=[bar.close for bar in bars5],
-                current_price=price,
-                ma5_15m=sum(closes15[-5:]) / 5,
-            )
-            if signal.action != "enter_long":
+            def _entry(side: str):
+                return evaluate_intraday_entry_signal(
+                    symbol=symbol, market=market, at=at,
+                    closes_15m=closes15, lows_15m=[bar.low for bar in bars15],
+                    highs_15m=[bar.high for bar in bars15], closes_5m=[bar.close for bar in bars5],
+                    current_price=price, ma5_15m=sum(closes15[-5:]) / 5, side=side,
+                    shortable=self._is_shortable(symbol),
+                )
+
+            signal = _entry("long")
+            is_short = False
+            if signal.action != "enter_long" and self._is_shortable(symbol):
+                short_signal = _entry("short")
+                if short_signal.action == "enter_short":
+                    signal, is_short = short_signal, True
+            if signal.action not in ("enter_long", "enter_short"):
                 continue
-            risk = self._live_risk(symbol, market, "open", at)
+            risk = self._live_risk(symbol, market, "open", at, is_short=is_short)
             if not risk.allowed:
                 self._record_signal("intraday_macd", symbol, risk.reasons, at)
                 continue
+            equity = _account_equity(snapshot, self.config.default_equity)
             result = execute_intraday_entry(
-                gateway=self.gateway,
-                symbol=symbol,
-                price=price,
-                total_equity=_account_equity(snapshot, self.config.default_equity),
+                gateway=self.gateway, symbol=symbol, price=price,
+                total_equity=equity,
                 current_symbols=_current_symbols(snapshot),
                 stopped_symbols_today=tuple(self.runtime_state.stopped_symbols_today),
-                daily_loss_pct=self.runtime_state.daily_loss_pct(_account_equity(snapshot, self.config.default_equity)),
+                daily_loss_pct=self.runtime_state.daily_loss_pct(equity),
                 pdt_trades_remaining=self.runtime_state.pdt_remaining(at.date()) if market == "US" else None,
+                is_short=is_short,
+                shortable=self._is_shortable(symbol),
             )
             self.runtime_state.record_order_result(result.submitted, result.reasons)
             if result.submitted:
@@ -356,7 +363,7 @@ class LiveRuntime:
                 self.runtime_state.mark_trend_half_taken(position.symbol)
             self._record_signal("trend_portfolio", position.symbol, result.reasons, at, submitted=result.submitted)
 
-    def _live_risk(self, symbol: str, market: Market, purpose: str, at: datetime):
+    def _live_risk(self, symbol: str, market: Market, purpose: str, at: datetime, is_short: bool = False):
         snapshot = self.live_state.snapshot()
         balance = _account_equity(snapshot, self.config.default_equity)
         return evaluate_live_order_risk(
@@ -369,7 +376,12 @@ class LiveRuntime:
             pdt_trades_remaining=self.runtime_state.pdt_remaining(at.date()) if market == "US" else None,
             consecutive_order_failures=self.runtime_state.consecutive_order_failures,
             account_halted=self.runtime_state.is_halted(),
+            is_short=is_short,
+            shortable=self._is_shortable(symbol),
         )
+
+    def _is_shortable(self, symbol: str) -> bool:
+        return symbol.upper() in self._shortable_symbols
 
     def _subscription_symbols(self) -> list[str]:
         symbols = list({

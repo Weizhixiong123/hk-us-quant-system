@@ -278,6 +278,41 @@ def test_reverse_cross_insufficient_bars_is_false(tmp_path):
     assert runtime._reverse_cross("AAPL", "long") is False
 
 
+def test_intraday_short_entry_for_shortable_symbol(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runtime, gateway = _runtime(tmp_path)
+    runtime.runtime_state.intraday_watchlist = ["AAPL"]  # universe 中 AAPL shortable=True
+
+    def fake_signal(**kwargs):
+        if kwargs.get("side") == "short":
+            return SimpleNamespace(action="enter_short")
+        return SimpleNamespace(action="wait")
+
+    monkeypatch.setattr("quant.live.runtime.evaluate_intraday_entry_signal", fake_signal)
+
+    runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))
+    snapshot = runtime.live_state.snapshot()
+
+    assert snapshot["positions"][0].symbol == "AAPL"
+    assert "空" in snapshot["positions"][0].direction
+
+
+def test_intraday_short_blocked_for_non_shortable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runtime, gateway = _runtime(tmp_path)
+    runtime.runtime_state.intraday_watchlist = ["NVDA"]  # universe 中 NVDA shortable=False
+
+    monkeypatch.setattr(
+        "quant.live.runtime.evaluate_intraday_entry_signal",
+        lambda **kwargs: SimpleNamespace(action="enter_short") if kwargs.get("side") == "short" else SimpleNamespace(action="wait"),
+    )
+
+    runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))
+    assert runtime.live_state.snapshot()["positions"] == []
+
+
 def test_portfolio_entry_records_entry_date(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
