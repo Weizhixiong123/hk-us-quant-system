@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 import pandas as pd
 
 from app.strategies.trend_portfolio import FundamentalSnapshot
+from quant.data.fundamentals import FundamentalsSource, default_fundamentals_source, load_fundamentals
 from quant.data.loaders import load_daily
 from quant.data.universe import SymbolInfo, all_symbols
 from quant.indicators.macd import has_bearish_cross, has_bullish_cross, macd
 from quant.live.market_data import BarAggregator
+from quant.live.market_info import MarketInfoProvider
 from quant.live.trend import DailyTimingSnapshot
 from quant.screening.intraday_screener import IntradayCandidate
 
@@ -50,11 +52,18 @@ class DefaultLiveDataProvider:
         symbols: list[SymbolInfo] | None = None,
         daily_loader: DailyLoader | None = None,
         today: date | None = None,
+        fundamentals_source: FundamentalsSource | None = None,
+        risk_blocklist: Iterable[str] = (),
+        market_info: MarketInfoProvider | None = None,
     ) -> None:
         self.market_data = market_data
         self.symbols = symbols or all_symbols()
         self.daily_loader = daily_loader or load_daily
         self.today = today
+        self.fundamentals_source = fundamentals_source or default_fundamentals_source
+        self.risk_blocklist = tuple(risk_blocklist)
+        self.market_info = market_info or MarketInfoProvider()
+        self._fundamentals_cache: dict[str, FundamentalSnapshot] = {}
 
     def intraday_candidates(self) -> list[IntradayCandidate]:
         candidates: list[IntradayCandidate] = []
@@ -68,6 +77,7 @@ class DefaultLiveDataProvider:
             prev_close = float(prev["close"])
             amplitude = (float(prev["high"]) - float(prev["low"])) / prev_close * 100 if prev_close > 0 else 0.0
             turnover = (recent["close"] * recent["volume"]).mean()
+            halted, ex_dividend_soon, major_news = self.market_info.lookup(item.symbol)
             candidates.append(
                 IntradayCandidate(
                     symbol=item.symbol,
@@ -75,9 +85,9 @@ class DefaultLiveDataProvider:
                     avg_turnover=float(turnover),
                     prev_amplitude_pct=round(amplitude, 4),
                     price=float(latest_price),
-                    halted=False,
-                    ex_dividend_soon=False,
-                    major_news=False,
+                    halted=halted,
+                    ex_dividend_soon=ex_dividend_soon,
+                    major_news=major_news,
                 )
             )
         return candidates
@@ -88,7 +98,14 @@ class DefaultLiveDataProvider:
             daily = self._load_daily(item, lookback_days=2200)
             if daily is None:
                 continue
-            rows.append((item.symbol, item.market, daily, _default_fundamentals(item.market)))
+            fundamentals = load_fundamentals(
+                item.symbol,
+                item.market,
+                self.fundamentals_source,
+                self.risk_blocklist,
+                self._fundamentals_cache,
+            )
+            rows.append((item.symbol, item.market, daily, fundamentals))
         return rows
 
     def daily_timing(self, symbol: str, market: str) -> DailyTimingSnapshot | None:
@@ -140,14 +157,6 @@ class DefaultLiveDataProvider:
             return self.daily_loader(item.symbol, item.market, start, end)
         except Exception:
             return None
-
-
-def _default_fundamentals(market: str) -> FundamentalSnapshot:
-    return FundamentalSnapshot(
-        positive_profit_quarters=4,
-        market_cap=6_000_000_000 if market == "HK" else 3_000_000_000,
-        has_major_risk=False,
-    )
 
 
 def _recent_gain_pct(close: pd.Series, days: int) -> float:

@@ -56,3 +56,33 @@ def test_default_data_provider_builds_daily_timing_snapshot():
     assert timing.ma20 > 0
     assert timing.ma30 > 0
     assert timing.avg_volume20 == 100_000
+
+
+def test_intraday_candidates_use_market_info():
+    from quant.live.market_info import MarketInfoProvider, SymbolMarketInfo
+
+    provider = DefaultLiveDataProvider(
+        market_data=BarAggregator(),
+        symbols=[SymbolInfo("AAPL", "Apple", "US")],
+        daily_loader=_daily,
+        today=date(2026, 6, 23),
+        market_info=MarketInfoProvider(source=lambda s: SymbolMarketInfo(halted=True, ex_dividend_soon=False)),
+    )
+
+    assert provider.intraday_candidates()[0].halted is True
+
+
+def test_portfolio_rows_use_real_fundamentals():
+    from quant.data.fundamentals import RawFundamentals
+
+    provider = DefaultLiveDataProvider(
+        market_data=BarAggregator(),
+        symbols=[SymbolInfo("0700.HK", "腾讯", "HK")],
+        daily_loader=_daily,
+        today=date(2026, 6, 23),
+        fundamentals_source=lambda s, m: RawFundamentals(market_cap=6e9, positive_profit_quarters=4),
+    )
+
+    rows = provider.portfolio_rows()
+    assert rows[0][3].market_cap == 6e9
+    assert rows[0][3].positive_profit_quarters == 4
