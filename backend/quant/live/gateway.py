@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from quant.live.config import FutuGatewayConfig
+from quant.live.market_data import Bar
 from quant.live.state import LiveGatewayState
 from quant.live.translate import (
     account_from_vnpy,
@@ -117,6 +118,29 @@ class FutuLiveGateway:
         )
         self._require_main_engine().cancel_order(req, _GATEWAY_NAME)
 
+    def query_history_minute(
+        self,
+        symbol: str,
+        count: int = 800,
+        exchange: str | None = None,
+    ) -> list[Bar]:
+        # 先校验连接（未连接抛 RuntimeError），再延迟 import vnpy（远程无 vnpy）。
+        main_engine = self._require_main_engine()
+        from datetime import datetime, timedelta
+
+        from vnpy.trader.constant import Exchange, Interval
+        from vnpy.trader.object import HistoryRequest
+
+        req = HistoryRequest(
+            symbol=_clean_symbol(symbol),
+            exchange=_resolve_exchange(symbol, self.config.market, Exchange, exchange),
+            start=datetime.now() - timedelta(days=5),
+            end=datetime.now(),
+            interval=Interval.MINUTE,
+        )
+        raw_bars = main_engine.query_history(req, _GATEWAY_NAME) or []
+        return _bars_from_vnpy(symbol, raw_bars)[-count:]
+
     def close(self) -> None:
         if self._main_engine is not None:
             self._main_engine.close()
@@ -183,4 +207,21 @@ def _market_from_symbol(symbol: str) -> str | None:
     if value.endswith(".US") or value.startswith("US."):
         return "US"
     return None
+
+
+def _bars_from_vnpy(symbol: str, raw_bars) -> list[Bar]:
+    bars: list[Bar] = []
+    for item in raw_bars:
+        bars.append(
+            Bar(
+                symbol=symbol,
+                start=getattr(item, "datetime", None),
+                open=float(getattr(item, "open_price", 0.0)),
+                high=float(getattr(item, "high_price", 0.0)),
+                low=float(getattr(item, "low_price", 0.0)),
+                close=float(getattr(item, "close_price", 0.0)),
+                volume=float(getattr(item, "volume", 0.0)),
+            )
+        )
+    return bars
 
