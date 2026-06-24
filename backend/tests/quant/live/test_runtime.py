@@ -150,3 +150,82 @@ def test_seed_history_populates_market_data_once(tmp_path):
 def test_seed_history_skips_gateway_without_history(tmp_path):
     runtime, _gateway = _runtime(tmp_path)  # DryRunGateway 无 query_history_minute
     runtime._seed_history(["AAPL"])  # 不抛异常即可
+
+
+def test_seed_history_first_symbol_failure_does_not_abort_second(tmp_path):
+    """Finding 1: seed_minute_bars failure on first symbol must not skip second symbol."""
+    from quant.live.market_data import BarAggregator
+
+    class FailFirstGateway(DryRunGateway):
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            if symbol == "AAPL":
+                raise ValueError("intentional failure for AAPL")
+            return [
+                Bar(symbol, datetime(2026, 6, 24, 9, m, tzinfo=timezone.utc), 100, 100, 100, 100, 100)
+                for m in range(5)
+            ]
+
+    live_state = LiveGatewayState()
+    gateway = FailFirstGateway(live_state)
+    market_data = BarAggregator()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=gateway,
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=market_data,
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+    runtime._seeded_day = datetime(2026, 6, 24, tzinfo=timezone.utc).date()
+
+    runtime._seed_history(["AAPL", "MSFT"])
+
+    # Failed symbol must NOT be in _seeded_symbols
+    assert "AAPL" not in runtime._seeded_symbols
+    # Second symbol must be seeded successfully
+    assert "MSFT" in runtime._seeded_symbols
+    assert market_data.minute_bars("MSFT")
+
+
+def test_seed_history_seed_minute_bars_failure_does_not_abort_second(tmp_path):
+    """Finding 1: if seed_minute_bars itself raises (e.g. bad bar), second symbol still seeded."""
+    from quant.live.market_data import BarAggregator, Bar as RealBar
+
+    call_count = {"n": 0}
+
+    class RaisingSeedAggregator(BarAggregator):
+        def seed_minute_bars(self, symbol, bars):
+            if symbol == "AAPL":
+                raise TypeError("bad bar for AAPL")
+            super().seed_minute_bars(symbol, bars)
+
+    class SimpleGateway(DryRunGateway):
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            call_count["n"] += 1
+            return [
+                RealBar(symbol, datetime(2026, 6, 24, 9, m, tzinfo=timezone.utc), 100, 100, 100, 100, 100)
+                for m in range(5)
+            ]
+
+    live_state = LiveGatewayState()
+    gateway = SimpleGateway(live_state)
+    market_data = RaisingSeedAggregator()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=gateway,
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=market_data,
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+    runtime._seeded_day = datetime(2026, 6, 24, tzinfo=timezone.utc).date()
+
+    runtime._seed_history(["AAPL", "MSFT"])
+
+    assert "AAPL" not in runtime._seeded_symbols
+    assert "MSFT" in runtime._seeded_symbols
+    assert market_data.minute_bars("MSFT")

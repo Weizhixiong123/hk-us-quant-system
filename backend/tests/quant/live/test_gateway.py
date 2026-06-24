@@ -50,6 +50,35 @@ def test_bars_from_vnpy_maps_fields():
     assert bars[0].volume == 100.0
 
 
+def test_bars_from_vnpy_skips_bar_with_none_datetime():
+    """Finding 2: _bars_from_vnpy must drop any raw bar whose datetime is None."""
+    from datetime import datetime, timezone
+
+    from quant.live.gateway import _bars_from_vnpy
+
+    dt = datetime(2026, 6, 24, 9, 30, tzinfo=timezone.utc)
+
+    class _GoodBar:
+        datetime = dt
+        open_price = 1.0
+        high_price = 2.0
+        low_price = 0.5
+        close_price = 1.5
+        volume = 100.0
+
+    class _NullBar:
+        datetime = None
+        open_price = 0.0
+        high_price = 0.0
+        low_price = 0.0
+        close_price = 0.0
+        volume = 0.0
+
+    bars = _bars_from_vnpy("AAPL", [_NullBar(), _GoodBar(), _NullBar()])
+    assert len(bars) == 1
+    assert bars[0].start == dt
+
+
 def test_query_history_minute_requires_connection():
     import pytest
 

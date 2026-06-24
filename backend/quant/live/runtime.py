@@ -366,10 +366,10 @@ class LiveRuntime:
                 continue
             try:
                 bars = query(symbol)
+                self.market_data.seed_minute_bars(symbol, bars)
             except Exception as exc:
                 self._record_log("runtime", f"{symbol} 历史补种失败：{exc}")
                 continue
-            self.market_data.seed_minute_bars(symbol, bars)
             self._seeded_symbols.add(symbol)
 
     def _record_signal(

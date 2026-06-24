@@ -212,10 +212,13 @@ def _market_from_symbol(symbol: str) -> str | None:
 def _bars_from_vnpy(symbol: str, raw_bars) -> list[Bar]:
     bars: list[Bar] = []
     for item in raw_bars:
+        dt = getattr(item, "datetime", None)
+        if dt is None:
+            continue
         bars.append(
             Bar(
                 symbol=symbol,
-                start=getattr(item, "datetime", None),
+                start=dt,
                 open=float(getattr(item, "open_price", 0.0)),
                 high=float(getattr(item, "high_price", 0.0)),
                 low=float(getattr(item, "low_price", 0.0)),
