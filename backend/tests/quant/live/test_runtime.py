@@ -110,3 +110,43 @@ def test_runtime_run_once_persists_gateway_snapshot(tmp_path):
     runtime.run_once(datetime(2026, 6, 23, 14, 16, tzinfo=timezone.utc))
 
     assert list_live_events(kind="trade", db_path=tmp_path / "live.sqlite3")
+
+
+def test_seed_history_populates_market_data_once(tmp_path):
+    from quant.live.market_data import BarAggregator
+
+    calls: list[str] = []
+
+    class SeedGateway(DryRunGateway):
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [
+                Bar(symbol, datetime(2026, 6, 23, 9, m, tzinfo=timezone.utc), 100, 100, 100, 100, 100)
+                for m in range(20)
+            ]
+
+    live_state = LiveGatewayState()
+    gateway = SeedGateway(live_state)
+    market_data = BarAggregator()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=gateway,
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=market_data,
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+    runtime._seeded_day = datetime(2026, 6, 23, tzinfo=timezone.utc).date()
+
+    runtime._seed_history(["AAPL"])
+    runtime._seed_history(["AAPL"])
+
+    assert market_data.minute_bars("AAPL")
+    assert calls == ["AAPL"]  # 当日只补种一次
+
+
+def test_seed_history_skips_gateway_without_history(tmp_path):
+    runtime, _gateway = _runtime(tmp_path)  # DryRunGateway 无 query_history_minute
+    runtime._seed_history(["AAPL"])  # 不抛异常即可

@@ -84,6 +84,8 @@ class LiveRuntime:
         self.db_path = db_path
         self._task: asyncio.Task | None = None
         self._running = False
+        self._seeded_day = None
+        self._seeded_symbols: set[str] = set()
 
     async def start(self) -> None:
         if not self.config.enabled or self._running:
@@ -115,6 +117,9 @@ class LiveRuntime:
     def run_once(self, at: datetime) -> None:
         snapshot = self.live_state.snapshot()
         self.runtime_state.reset_for_day(at.date())
+        if self._seeded_day != at.date():
+            self._seeded_day = at.date()
+            self._seeded_symbols.clear()
         self.market_data.ingest_ticks(snapshot.get("ticks", []))
         self.runtime_state.persist_gateway_snapshot(snapshot, at, self.db_path)
         for action in self.scheduler.due_actions(at):
@@ -139,6 +144,7 @@ class LiveRuntime:
         self.runtime_state.intraday_watchlist = symbols
         if symbols:
             self.gateway.subscribe(symbols)
+            self._seed_history(symbols)
         record_live_event(
             kind="selection",
             strategy_id="intraday_macd",
@@ -247,6 +253,7 @@ class LiveRuntime:
         self.runtime_state.portfolio_watchlist = symbols
         if symbols:
             self.gateway.subscribe(symbols)
+            self._seed_history(symbols)
         record_live_event(
             kind="selection",
             strategy_id="trend_portfolio",
@@ -349,6 +356,21 @@ class LiveRuntime:
             return symbols
         provider_symbols = getattr(self.data_provider, "symbols", [])
         return [item.symbol for item in provider_symbols]
+
+    def _seed_history(self, symbols: list[str]) -> None:
+        query = getattr(self.gateway, "query_history_minute", None)
+        if query is None:
+            return
+        for symbol in symbols:
+            if symbol in self._seeded_symbols:
+                continue
+            try:
+                bars = query(symbol)
+            except Exception as exc:
+                self._record_log("runtime", f"{symbol} 历史补种失败：{exc}")
+                continue
+            self.market_data.seed_minute_bars(symbol, bars)
+            self._seeded_symbols.add(symbol)
 
     def _record_signal(
         self,
