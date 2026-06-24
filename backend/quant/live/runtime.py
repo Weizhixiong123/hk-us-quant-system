@@ -312,7 +312,7 @@ class LiveRuntime:
             if timing is None:
                 continue
             stage = self.runtime_state.next_portfolio_stage(symbol)
-            signal = evaluate_trend_entry_signal(symbol, timing, stage=stage)
+            signal = evaluate_trend_entry_signal(symbol, timing, stage=stage, hot_gain_block_pct=self.params.portfolio.hot_gain_block_pct)
             if signal.action == "wait" or signal.stage is None:
                 continue
             risk = self._live_risk(symbol, market, "open", at)

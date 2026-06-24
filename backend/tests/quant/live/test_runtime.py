@@ -337,6 +337,33 @@ def test_runtime_uses_injected_params_for_entry(tmp_path, monkeypatch):
     assert captured["position_fraction_pct"] == 25.0
 
 
+def test_portfolio_entry_passes_hot_gain_block_pct_to_signal(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from quant.live.params import LiveParams
+
+    runtime, _gateway = _runtime(tmp_path)
+    runtime.params.update("trend_portfolio", {"hot_gain_block_pct": 55.0})
+    runtime.runtime_state.portfolio_watchlist = ["0700.HK"]
+
+    captured = {}
+
+    def fake_evaluate(symbol, timing, stage, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(action="wait", symbol=symbol, stage=None, pullback_confirmed=False)
+
+    monkeypatch.setattr("quant.live.runtime.evaluate_trend_entry_signal", fake_evaluate)
+
+    class _DP(FakeDataProvider):
+        def daily_timing(self, symbol, market):
+            return SimpleNamespace(close=100.0)
+
+    runtime.data_provider = _DP()
+    at = datetime(2026, 6, 24, 20, 5, tzinfo=timezone.utc)
+    runtime._run_portfolio_entries("HK", at)
+
+    assert captured.get("hot_gain_block_pct") == 55.0
+
+
 def test_portfolio_entry_records_entry_date(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -345,7 +372,7 @@ def test_portfolio_entry_records_entry_date(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "quant.live.runtime.evaluate_trend_entry_signal",
-        lambda symbol, timing, stage: SimpleNamespace(
+        lambda symbol, timing, stage, **kw: SimpleNamespace(
             action="enter_first", symbol=symbol, stage="first", pullback_confirmed=True
         ),
     )

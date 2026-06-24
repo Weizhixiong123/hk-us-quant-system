@@ -46,5 +46,6 @@ def _merge(current, values: Mapping[str, Any], known: dict[str, Any]):
     for key, value in values.items():
         if key not in known:
             continue
+        # field.type is the string "int" under PEP 563 (from __future__ import annotations); keep both forms.
         changes[key] = int(value) if known[key] in ("int", int) else float(value)
     return replace(current, **changes) if changes else current
