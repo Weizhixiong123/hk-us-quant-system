@@ -243,3 +243,36 @@ def test_seed_history_seed_minute_bars_failure_does_not_abort_second(tmp_path):
     assert "AAPL" not in runtime._seeded_symbols
     assert "MSFT" in runtime._seeded_symbols
     assert market_data.minute_bars("MSFT")
+
+
+def test_reverse_cross_long_detects_bearish_cross(tmp_path):
+    runtime, _gateway = _runtime(tmp_path)
+    # 构造一段先涨后急跌的 15m 收盘价，使 MACD 形成死叉
+    closes = (
+        [100] * 5 +
+        list(range(100, 140)) +       # 强势上涨
+        [140] * 10 +                  # 平台期
+        list(range(140, 138, -1))     # 小幅下跌
+    )[:49]
+    bars = [
+        Bar("AAPL", datetime(2026, 6, 24, 9, i, tzinfo=timezone.utc), c, c + 1, c - 1, c, 100)
+        for i, c in enumerate(closes)
+    ]
+
+    class _MD:
+        def interval_bars(self, symbol, interval_minutes, limit=100):
+            return bars
+
+    runtime.market_data = _MD()
+    assert runtime._reverse_cross("AAPL", "long") is True
+
+
+def test_reverse_cross_insufficient_bars_is_false(tmp_path):
+    runtime, _gateway = _runtime(tmp_path)
+
+    class _MD:
+        def interval_bars(self, symbol, interval_minutes, limit=100):
+            return []
+
+    runtime.market_data = _MD()
+    assert runtime._reverse_cross("AAPL", "long") is False

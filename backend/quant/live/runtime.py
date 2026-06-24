@@ -30,6 +30,7 @@ from quant.live.trend import (
     evaluate_trend_entry_signal,
     evaluate_trend_exit_signal,
 )
+from quant.indicators.macd import has_bearish_cross, has_bullish_cross, macd
 
 
 class RuntimeGateway(Protocol):
@@ -224,7 +225,7 @@ class LiveRuntime:
                 market=market,
                 at=at,
                 current_price=price,
-                reverse_cross=False,
+                reverse_cross=self._reverse_cross(position.symbol, _position_side(position.direction)),
             )
             if force and signal.action == "wait":
                 signal = evaluate_intraday_exit_signal(
@@ -255,6 +256,13 @@ class LiveRuntime:
             if result.submitted and signal.stopped_today:
                 self.runtime_state.mark_stopped(position.symbol)
             self._record_signal("intraday_macd", position.symbol, result.reasons, at, submitted=result.submitted)
+
+    def _reverse_cross(self, symbol: str, side: str) -> bool:
+        bars15 = self.market_data.interval_bars(symbol, 15, limit=80)
+        points = macd([bar.close for bar in bars15])
+        if len(points) < 2:
+            return False
+        return has_bearish_cross(points) if side == "long" else has_bullish_cross(points)
 
     def _run_portfolio_month_end_scan(self, at: datetime) -> None:
         rows = self.data_provider.portfolio_rows()
