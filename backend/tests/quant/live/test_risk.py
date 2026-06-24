@@ -78,3 +78,34 @@ def test_pdt_tracker_counts_rolling_five_business_days():
 
     assert tracker.remaining(date(2026, 6, 25)) == 0
     assert tracker.remaining(date(2026, 6, 30)) == 2
+
+
+def test_live_risk_blocks_open_when_account_halted():
+    from quant.live.risk import evaluate_live_order_risk
+
+    decision = evaluate_live_order_risk(
+        symbol="AAPL",
+        market="US",
+        purpose="open",
+        gateway_connected=True,
+        daily_loss_pct=0.0,
+        stopped_symbols_today=(),
+        account_halted=True,
+    )
+    assert decision.allowed is False
+    assert any("熔断" in reason for reason in decision.reasons)
+
+
+def test_live_risk_halt_does_not_block_close():
+    from quant.live.risk import evaluate_live_order_risk
+
+    decision = evaluate_live_order_risk(
+        symbol="AAPL",
+        market="US",
+        purpose="close",
+        gateway_connected=True,
+        daily_loss_pct=0.0,
+        stopped_symbols_today=(),
+        account_halted=True,
+    )
+    assert decision.allowed is True

@@ -189,6 +189,20 @@ def test_seed_history_first_symbol_failure_does_not_abort_second(tmp_path):
     assert market_data.minute_bars("MSFT")
 
 
+def test_run_once_trips_halt_on_daily_loss(tmp_path):
+    from datetime import date
+    from quant.live.translate import GatewayAccount
+
+    runtime, _gateway = _runtime(tmp_path)
+    day = date(2026, 6, 24)
+    runtime.runtime_state.observe_account_equity(1000.0, day)
+    runtime.live_state.update_account(GatewayAccount("acc", 950.0, 950.0, 0.0))
+
+    runtime.run_once(datetime(2026, 6, 24, 14, 0, tzinfo=timezone.utc))
+
+    assert runtime.runtime_state.is_halted() is True
+
+
 def test_seed_history_seed_minute_bars_failure_does_not_abort_second(tmp_path):
     """Finding 1: if seed_minute_bars itself raises (e.g. bad bar), second symbol still seeded."""
     from quant.live.market_data import BarAggregator, Bar as RealBar

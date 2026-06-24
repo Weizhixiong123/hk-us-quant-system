@@ -60,6 +60,7 @@ class RuntimeConfig:
     dry_run: bool = True
     poll_interval_seconds: float = 2.0
     default_equity: float = 1_000_000.0
+    max_daily_loss_pct: float = 3.0
 
 
 class LiveRuntime:
@@ -121,9 +122,17 @@ class LiveRuntime:
             self._seeded_day = at.date()
             self._seeded_symbols.clear()
         self.market_data.ingest_ticks(snapshot.get("ticks", []))
+        self._observe_account(snapshot, at)
         self.runtime_state.persist_gateway_snapshot(snapshot, at, self.db_path)
         for action in self.scheduler.due_actions(at):
             self.handle_action(action, at)
+
+    def _observe_account(self, snapshot: dict[str, Any], at: datetime) -> None:
+        account = snapshot.get("account")
+        if account is None:
+            return
+        self.runtime_state.observe_account_equity(float(account.balance), at.date())
+        self.runtime_state.trip_halt_if_breached(float(account.balance), self.config.max_daily_loss_pct)
 
     def handle_action(self, action: SchedulerAction, at: datetime) -> None:
         if action.hook == "intraday_premarket_scan":
@@ -188,7 +197,7 @@ class LiveRuntime:
                 total_equity=_account_equity(snapshot, self.config.default_equity),
                 current_symbols=_current_symbols(snapshot),
                 stopped_symbols_today=tuple(self.runtime_state.stopped_symbols_today),
-                daily_loss_pct=0.0,
+                daily_loss_pct=self.runtime_state.daily_loss_pct(_account_equity(snapshot, self.config.default_equity)),
                 pdt_trades_remaining=self.runtime_state.pdt_remaining(at.date()) if market == "US" else None,
             )
             self.runtime_state.record_order_result(result.submitted, result.reasons)
@@ -336,15 +345,17 @@ class LiveRuntime:
 
     def _live_risk(self, symbol: str, market: Market, purpose: str, at: datetime):
         snapshot = self.live_state.snapshot()
+        balance = _account_equity(snapshot, self.config.default_equity)
         return evaluate_live_order_risk(
             symbol=symbol,
             market=market,
             purpose=purpose,
             gateway_connected=bool(snapshot.get("connected")),
-            daily_loss_pct=0.0,
+            daily_loss_pct=self.runtime_state.daily_loss_pct(balance),
             stopped_symbols_today=tuple(self.runtime_state.stopped_symbols_today),
             pdt_trades_remaining=self.runtime_state.pdt_remaining(at.date()) if market == "US" else None,
             consecutive_order_failures=self.runtime_state.consecutive_order_failures,
+            account_halted=self.runtime_state.is_halted(),
         )
 
     def _subscription_symbols(self) -> list[str]:

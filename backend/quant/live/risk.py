@@ -43,6 +43,7 @@ def evaluate_live_order_risk(
     shortable: bool = True,
     consecutive_order_failures: int = 0,
     max_order_failures: int = 3,
+    account_halted: bool = False,
 ) -> LiveRiskDecision:
     blocks: list[str] = []
     normalized_symbol = symbol.strip().upper()
@@ -54,6 +55,8 @@ def evaluate_live_order_risk(
         blocks.append("连续下单失败次数过多，暂停自动下单")
 
     if purpose == "open":
+        if account_halted:
+            blocks.append("已触发当日熔断，停止开仓")
         if daily_loss_pct <= -abs(max_daily_loss_pct):
             blocks.append("触发单日账户最大亏损")
         if normalized_symbol in stopped_symbols:
