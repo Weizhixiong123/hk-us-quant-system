@@ -20,6 +20,8 @@ class StrategyRuntimeState:
     consecutive_order_failures: int = 0
     pdt_tracker: PdtTracker = field(default_factory=PdtTracker)
     _current_day: date | None = None
+    day_start_equity: float | None = None
+    halted_today: bool = False
     _seen_orders: set[tuple[str, str, float]] = field(default_factory=set)
     _seen_trades: set[str] = field(default_factory=set)
     _seen_positions: set[tuple[str, str, float, float, float]] = field(default_factory=set)
@@ -30,6 +32,26 @@ class StrategyRuntimeState:
         self._current_day = day
         self.stopped_symbols_today.clear()
         self.intraday_half_taken.clear()
+        self.day_start_equity = None
+        self.halted_today = False
+
+    def observe_account_equity(self, balance: float, day: date) -> None:
+        self.reset_for_day(day)
+        if self.day_start_equity is None and balance > 0:
+            self.day_start_equity = float(balance)
+
+    def daily_loss_pct(self, current_balance: float) -> float:
+        if not self.day_start_equity or self.day_start_equity <= 0:
+            return 0.0
+        return (float(current_balance) - self.day_start_equity) / self.day_start_equity * 100
+
+    def trip_halt_if_breached(self, current_balance: float, max_daily_loss_pct: float) -> bool:
+        if self.daily_loss_pct(current_balance) <= -abs(max_daily_loss_pct):
+            self.halted_today = True
+        return self.halted_today
+
+    def is_halted(self) -> bool:
+        return self.halted_today
 
     def mark_stopped(self, symbol: str) -> None:
         self.stopped_symbols_today.add(_normalize(symbol))
