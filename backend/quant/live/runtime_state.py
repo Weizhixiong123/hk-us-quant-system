@@ -25,6 +25,7 @@ class StrategyRuntimeState:
     _seen_orders: set[tuple[str, str, float]] = field(default_factory=set)
     _seen_trades: set[str] = field(default_factory=set)
     _seen_positions: set[tuple[str, str, float, float, float]] = field(default_factory=set)
+    portfolio_entry_dates: dict[str, date] = field(default_factory=dict)
 
     def reset_for_day(self, day: date) -> None:
         if self._current_day == day:
@@ -97,6 +98,17 @@ class StrategyRuntimeState:
 
     def pdt_remaining(self, day: date) -> int:
         return self.pdt_tracker.remaining(day)
+
+    def record_portfolio_entry_date(self, symbol: str, day: date) -> None:
+        self.portfolio_entry_dates.setdefault(_normalize(symbol), day)
+
+    def holding_days(self, symbol: str, today: date) -> int:
+        entry = self.portfolio_entry_dates.get(_normalize(symbol))
+        return (today - entry).days if entry is not None else 0
+
+    def load_entry_dates_from_events(self, events) -> None:
+        for symbol, day in entry_dates_from_trade_events(events).items():
+            self.portfolio_entry_dates.setdefault(symbol, day)
 
     def persist_gateway_snapshot(
         self,
@@ -175,3 +187,14 @@ def _market_from_symbol(symbol: str) -> str:
     if value.endswith(".HK") or value.startswith("HK.") or value.isdigit():
         return "HK"
     return "US"
+
+
+def entry_dates_from_trade_events(events) -> dict[str, date]:
+    result: dict[str, date] = {}
+    for event in sorted(events, key=lambda item: item.created_at):
+        payload = getattr(event, "payload", {}) or {}
+        offset = str(payload.get("offset", ""))
+        symbol = getattr(event, "symbol", None) or payload.get("symbol")
+        if symbol and "开" in offset:
+            result.setdefault(_normalize(symbol), event.created_at.date())
+    return result

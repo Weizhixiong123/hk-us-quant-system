@@ -83,3 +83,36 @@ def test_trip_halt_not_breached():
     state.observe_account_equity(1000.0, date(2026, 6, 24))
     assert state.trip_halt_if_breached(980.0, 3.0) is False  # -2%
     assert state.is_halted() is False
+
+
+def test_record_and_compute_holding_days():
+    from datetime import date
+    from quant.live.runtime_state import StrategyRuntimeState
+
+    state = StrategyRuntimeState()
+    state.record_portfolio_entry_date("0700.HK", date(2026, 1, 1))
+    state.record_portfolio_entry_date("0700.HK", date(2026, 2, 1))  # 不覆盖
+    assert state.holding_days("0700.HK", date(2026, 1, 31)) == 30
+    assert state.holding_days("UNKNOWN", date(2026, 1, 31)) == 0
+
+
+def test_entry_dates_from_trade_events_earliest_open():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from quant.live.runtime_state import entry_dates_from_trade_events
+
+    def ev(symbol, offset, day):
+        return SimpleNamespace(
+            symbol=symbol,
+            created_at=datetime(2026, day // 100, day % 100, tzinfo=timezone.utc),
+            payload={"offset": offset},
+        )
+
+    events = [
+        ev("0700.HK", "开", 215),  # 2026-02-15
+        ev("0700.HK", "开", 110),  # 2026-01-10  更早
+        ev("AAPL", "平", 120),     # 平仓不计
+    ]
+    result = entry_dates_from_trade_events(events)
+    assert result["0700.HK"].day == 10 and result["0700.HK"].month == 1
+    assert "AAPL" not in result
