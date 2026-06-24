@@ -276,3 +276,28 @@ def test_reverse_cross_insufficient_bars_is_false(tmp_path):
 
     runtime.market_data = _MD()
     assert runtime._reverse_cross("AAPL", "long") is False
+
+
+def test_portfolio_entry_records_entry_date(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runtime, gateway = _runtime(tmp_path)
+    runtime.runtime_state.portfolio_watchlist = ["0700.HK"]
+
+    monkeypatch.setattr(
+        "quant.live.runtime.evaluate_trend_entry_signal",
+        lambda symbol, timing, stage: SimpleNamespace(
+            action="enter_first", symbol=symbol, stage="first", pullback_confirmed=True
+        ),
+    )
+
+    class _DP(FakeDataProvider):
+        def daily_timing(self, symbol, market):
+            return SimpleNamespace(close=100.0)
+
+    runtime.data_provider = _DP()
+    at = datetime(2026, 6, 24, 20, 5, tzinfo=timezone.utc)
+    runtime._run_portfolio_entries("HK", at)
+
+    assert runtime.runtime_state.holding_days("0700.HK", at.date()) == 0
+    assert "0700.HK" in runtime.runtime_state.portfolio_entry_dates

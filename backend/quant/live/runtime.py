@@ -22,7 +22,7 @@ from quant.live.risk import evaluate_live_order_risk
 from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.scheduler import LiveScheduler, SchedulerAction
 from quant.live.state import LiveGatewayState
-from quant.live.store import DbPath, record_live_event
+from quant.live.store import DbPath, list_live_events, record_live_event
 from quant.live.translate import GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 from quant.live.trend import (
     TrendPosition,
@@ -94,6 +94,9 @@ class LiveRuntime:
             return
         self.gateway.connect()
         self.gateway.subscribe(self._subscription_symbols())
+        self.runtime_state.load_entry_dates_from_events(
+            list_live_events(kind="trade", db_path=self.db_path)
+        )
         self._running = True
         self._record_log("runtime", "实盘运行时已启动")
         self._task = asyncio.create_task(self._loop())
@@ -312,6 +315,8 @@ class LiveRuntime:
             self.runtime_state.record_order_result(result.submitted, result.reasons)
             if result.submitted:
                 self.runtime_state.mark_portfolio_entry_submitted(symbol, signal.stage)
+                if signal.stage == "first":
+                    self.runtime_state.record_portfolio_entry_date(symbol, at.date())
             self._record_signal("trend_portfolio", symbol, result.reasons, at, submitted=result.submitted)
 
     def _run_portfolio_exits(self, market: Market, at: datetime) -> None:
@@ -326,7 +331,7 @@ class LiveRuntime:
                     symbol=position.symbol,
                     quantity=int(position.volume),
                     avg_price=float(position.price),
-                    holding_days=0,
+                    holding_days=self.runtime_state.holding_days(position.symbol, at.date()),
                     take_profit_done=self.runtime_state.trend_half_done(position.symbol),
                 ),
                 current_price=price,
