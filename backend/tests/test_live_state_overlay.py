@@ -46,3 +46,14 @@ def test_app_state_dashboard_falls_back_without_live_account():
     assert dashboard.positions
     assert dashboard.orders
     assert dashboard.risk[0].status == "blocked"
+
+
+def test_update_strategy_params_syncs_live_params():
+    from quant.live.params import LiveParams
+    from quant.live.state import LiveGatewayState
+    from app.services.state import AppState
+
+    params = LiveParams()
+    state = AppState(LiveGatewayState(), params)
+    state.update_strategy_params("intraday_macd", {"stop_loss_pct": 2.5})
+    assert params.intraday.stop_loss_pct == 2.5

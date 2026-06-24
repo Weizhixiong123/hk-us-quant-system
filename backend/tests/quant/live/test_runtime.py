@@ -313,6 +313,30 @@ def test_intraday_short_blocked_for_non_shortable(tmp_path, monkeypatch):
     assert runtime.live_state.snapshot()["positions"] == []
 
 
+def test_runtime_uses_injected_params_for_entry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from quant.live.params import LiveParams
+
+    params = LiveParams()
+    params.update("intraday_macd", {"position_fraction_pct": 25.0})
+
+    runtime, _gateway = _runtime(tmp_path)
+    runtime.params = params
+    runtime.runtime_state.intraday_watchlist = ["AAPL"]
+
+    captured = {}
+
+    def fake_execute(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(submitted=False, reasons=("x",))
+
+    monkeypatch.setattr("quant.live.runtime.evaluate_intraday_entry_signal", lambda **k: SimpleNamespace(action="enter_long"))
+    monkeypatch.setattr("quant.live.runtime.execute_intraday_entry", fake_execute)
+
+    runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))
+    assert captured["position_fraction_pct"] == 25.0
+
+
 def test_portfolio_entry_records_entry_date(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

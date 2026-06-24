@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from quant.live.clock import Market
 from quant.live.data_provider import DefaultLiveDataProvider, LiveDataProvider
+from quant.live.params import LiveParams
 from quant.live.executor import execute_exit_order, execute_intraday_entry, execute_portfolio_entry
 from quant.live.gateway import FutuLiveGateway
 from quant.live.intraday import (
@@ -76,6 +77,7 @@ class LiveRuntime:
         runtime_state: StrategyRuntimeState | None = None,
         config: RuntimeConfig | None = None,
         db_path: DbPath | None = None,
+        params: LiveParams | None = None,
     ) -> None:
         self.live_state = live_state
         self.gateway = gateway
@@ -85,6 +87,7 @@ class LiveRuntime:
         self.runtime_state = runtime_state or StrategyRuntimeState()
         self.config = config or RuntimeConfig()
         self.db_path = db_path
+        self.params = params or LiveParams()
         self._task: asyncio.Task | None = None
         self._running = False
         self._seeded_day = None
@@ -138,7 +141,7 @@ class LiveRuntime:
         if account is None:
             return
         self.runtime_state.observe_account_equity(float(account.balance), at.date())
-        self.runtime_state.trip_halt_if_breached(float(account.balance), self.config.max_daily_loss_pct)
+        self.runtime_state.trip_halt_if_breached(float(account.balance), self.params.intraday.max_daily_loss_pct)
 
     def handle_action(self, action: SchedulerAction, at: datetime) -> None:
         if action.hook == "intraday_premarket_scan":
@@ -210,6 +213,9 @@ class LiveRuntime:
                 pdt_trades_remaining=self.runtime_state.pdt_remaining(at.date()) if market == "US" else None,
                 is_short=is_short,
                 shortable=self._is_shortable(symbol),
+                position_fraction_pct=self.params.intraday.position_fraction_pct,
+                max_positions=self.params.intraday.max_positions,
+                max_daily_loss_pct=self.params.intraday.max_daily_loss_pct,
             )
             self.runtime_state.record_order_result(result.submitted, result.reasons)
             if result.submitted:
@@ -236,6 +242,9 @@ class LiveRuntime:
                 at=at,
                 current_price=price,
                 reverse_cross=self._reverse_cross(position.symbol, _position_side(position.direction)),
+                stop_loss_pct=self.params.intraday.stop_loss_pct,
+                take_profit_1_pct=self.params.intraday.take_profit_1_pct,
+                take_profit_2_pct=self.params.intraday.take_profit_2_pct,
             )
             if force and signal.action == "wait":
                 signal = evaluate_intraday_exit_signal(
@@ -318,6 +327,9 @@ class LiveRuntime:
                 current_position_values=position_values,
                 stage=signal.stage,
                 pullback_confirmed=signal.pullback_confirmed,
+                single_position_cap_pct=self.params.portfolio.single_position_cap_pct,
+                target_positions_max=self.params.portfolio.target_positions_max,
+                first_entry_fraction_pct=self.params.portfolio.first_entry_fraction_pct,
             )
             self.runtime_state.record_order_result(result.submitted, result.reasons)
             if result.submitted:
@@ -343,6 +355,9 @@ class LiveRuntime:
                 ),
                 current_price=price,
                 **asdict(context),
+                max_symbol_drawdown_pct=self.params.portfolio.max_symbol_drawdown_pct,
+                take_profit_pct=self.params.portfolio.take_profit_pct,
+                rebalance_months=self.params.portfolio.rebalance_months,
             )
             if signal.action == "wait":
                 continue
@@ -496,7 +511,7 @@ class DryRunGateway:
         self.state.update_position(position)
 
 
-def build_live_runtime_from_env(live_state: LiveGatewayState) -> LiveRuntime:
+def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams | None = None) -> LiveRuntime:
     config = RuntimeConfig(
         enabled=_env_bool("LIVE_RUNTIME_ENABLED", False),
         dry_run=_env_bool("LIVE_RUNTIME_DRY_RUN", True),
@@ -519,6 +534,7 @@ def build_live_runtime_from_env(live_state: LiveGatewayState) -> LiveRuntime:
         data_provider=data_provider,
         market_data=market_data,
         config=config,
+        params=params,
     )
 
 

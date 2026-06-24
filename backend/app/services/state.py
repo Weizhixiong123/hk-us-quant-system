@@ -23,11 +23,13 @@ from app.models.schemas import (
     TradeLog,
     WatchSymbol,
 )
+from quant.live.params import LiveParams
 from quant.live.state import LiveGatewayState
 
 
 class AppState:
-    def __init__(self, live_state: LiveGatewayState | None = None) -> None:
+    def __init__(self, live_state: LiveGatewayState | None = None, params: LiveParams | None = None) -> None:
+        self.params = params or LiveParams()
         self._lock = RLock()
         self._rng = random.Random(42)
         self.live_state = live_state
@@ -369,6 +371,7 @@ class AppState:
                 severity="info",
                 message=f"{strategy.name} 参数已更新：{', '.join(params.keys())}",
             )
+            self.params.update(strategy_id, params)
             return strategy
 
     def run_backtest(self, request: BacktestRequest) -> BacktestResult:

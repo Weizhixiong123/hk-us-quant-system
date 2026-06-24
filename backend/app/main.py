@@ -8,13 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.core.config import settings
 from app.services.state import AppState
+from quant.live.params import LiveParams
 from quant.live.runtime import build_live_runtime_from_env
 from quant.live.state import LiveGatewayState
 
 
 def create_app() -> FastAPI:
     live_state = LiveGatewayState()
-    live_runtime = build_live_runtime_from_env(live_state)
+    live_params = LiveParams()
+    live_runtime = build_live_runtime_from_env(live_state, live_params)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -32,7 +34,7 @@ def create_app() -> FastAPI:
     )
     app.state.live_state = live_state
     app.state.live_runtime = live_runtime
-    app.state.quant_state = AppState(app.state.live_state)
+    app.state.quant_state = AppState(app.state.live_state, live_params)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
