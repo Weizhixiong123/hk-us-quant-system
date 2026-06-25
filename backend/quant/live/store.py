@@ -15,6 +15,21 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "live.sqlite3"
 DbPath = str | os.PathLike[str]
 
 
+def live_db_path_for_mode(settings: Mapping[str, Any]) -> Path:
+    """按运行模式返回独立的数据库文件,实现干跑/模拟盘/实盘物理隔离。"""
+    runtime = settings.get("runtime", {})
+    if bool(runtime.get("dry_run", True)):
+        tag = "dry_run"
+    else:
+        broker = str(runtime.get("broker", "futu")).lower()
+        if broker == "tiger":
+            env = str(settings.get("tiger", {}).get("environment", "sandbox")).lower()
+        else:
+            env = str(settings.get("futu", {}).get("trd_env", "SIMULATE")).lower()
+        tag = f"{broker}-{env}"
+    return DEFAULT_DB_PATH.parent / f"live-{tag}.sqlite3"
+
+
 @dataclass(frozen=True)
 class LiveEvent:
     id: str
