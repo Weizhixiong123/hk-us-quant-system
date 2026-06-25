@@ -427,3 +427,22 @@ def test_portfolio_entry_records_entry_date(tmp_path, monkeypatch):
 
     assert runtime.runtime_state.holding_days("0700.HK", at.date()) == 0
     assert "0700.HK" in runtime.runtime_state.portfolio_entry_dates
+
+
+def test_dry_run_gateway_simulates_cash_account():
+    live_state = LiveGatewayState()
+    gateway = DryRunGateway(live_state, initial_cash=1_000_000.0)
+    gateway.connect()
+
+    # 买入 AAPL 100 股 @100 → 现金扣 10000，持仓市值 10000，权益不变
+    gateway.send_order("AAPL", "多", "开", price=100.0, volume=100)
+    account = live_state.snapshot()["account"]
+    assert account is not None
+    assert account.available == 990_000.0
+    assert account.balance == 1_000_000.0
+
+    # 卖出平仓 @120 → 回笼 12000，已实现盈利 2000，无持仓
+    gateway.send_order("AAPL", "空", "平", price=120.0, volume=100)
+    account = live_state.snapshot()["account"]
+    assert account.available == 1_002_000.0
+    assert account.balance == 1_002_000.0

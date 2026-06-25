@@ -59,3 +59,46 @@ def test_update_strategy_params_syncs_live_params():
     state = AppState(LiveGatewayState(), params)
     state.update_strategy_params("intraday_macd", {"stop_loss_pct": 2.5})
     assert params.intraday.stop_loss_pct == 2.5
+
+
+def test_dashboard_account_reflects_dry_run_simulated_account():
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_002_000, available=1_002_000, frozen=0)
+    )
+
+    account = AppState(live_state).dashboard().account
+
+    assert account.source == "dry_run"
+    assert account.total_equity == 1_002_000
+    assert account.day_pnl == 2_000  # balance − default_equity(1,000,000)
+    assert account.day_pnl_pct == 0.2
+
+
+def test_dashboard_hides_seed_demo_when_live_account_present():
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+
+    dashboard = AppState(live_state).dashboard()
+
+    # 网关已初始化(有账户)但尚无成交 → 显示空,而非 seed 演示数据
+    assert dashboard.positions == []
+    assert dashboard.orders == []
+    assert dashboard.trades == []
+
+
+def test_tick_skips_demo_drift_when_live_account_present():
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+    state = AppState(live_state)
+
+    first = [candle.close for candle in state.tick().chart]
+    second = [candle.close for candle in state.tick().chart]
+
+    # 已接网关:不做随机演示漂移,连续推送一致
+    assert first == second
+    assert state.tick().positions == []

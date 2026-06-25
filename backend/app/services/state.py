@@ -276,16 +276,25 @@ class AppState:
     def dashboard(self) -> DashboardSnapshot:
         with self._lock:
             live_snapshot = self._live_snapshot()
+            has_live_account = bool(live_snapshot and live_snapshot.get("account"))
+            positions = self._live_positions(live_snapshot)
+            orders = self._live_orders(live_snapshot)
+            trades = self._live_trades(live_snapshot)
+            if not has_live_account:
+                # 仅在未接网关(纯前端演示)时回落到 seed 演示数据
+                positions = positions or self.positions
+                orders = orders or self.orders
+                trades = trades or self.trades
             return DashboardSnapshot(
                 server_time=self._now(),
                 account=self._dashboard_account(live_snapshot),
                 risk=self.risk_status(live_snapshot),
                 strategies=self.strategies,
-                positions=self._live_positions(live_snapshot) or self.positions,
+                positions=positions,
                 watchlist=self.watchlist,
                 signals=self.signals,
-                orders=self._live_orders(live_snapshot) or self.orders,
-                trades=self._live_trades(live_snapshot) or self.trades,
+                orders=orders,
+                trades=trades,
                 logs=self._live_logs(live_snapshot) + self.logs,
                 chart=self.chart,
             )
@@ -439,6 +448,10 @@ class AppState:
 
     def tick(self) -> DashboardSnapshot:
         with self._lock:
+            snapshot = self._live_snapshot()
+            if snapshot and snapshot.get("account"):
+                # 已接网关：返回真实快照，不做随机演示漂移
+                return self.dashboard()
             drift = self._rng.uniform(-0.25, 0.3)
             self.account.day_pnl = round(self.account.day_pnl + drift * 620, 2)
             self.account.day_pnl_pct = round(
@@ -537,6 +550,21 @@ class AppState:
         account = snapshot.get("account") if snapshot else None
         if account is None:
             return None
+        if account.account_id == "DRY-RUN":
+            initial = float(
+                load_live_settings().get("runtime", {}).get("default_equity", 1_000_000.0)
+            )
+            day_pnl = round(account.balance - initial, 2)
+            return AccountSummary(
+                currency="DRY-RUN",
+                source="dry_run",
+                total_equity=round(account.balance, 2),
+                cash=round(account.available, 2),
+                buying_power=round(account.available, 2),
+                day_pnl=day_pnl,
+                day_pnl_pct=round(day_pnl / initial * 100, 2) if initial else 0.0,
+                max_daily_loss_pct=self.account.max_daily_loss_pct,
+            )
         return AccountSummary(
             currency="HKD/USD",
             source="broker",

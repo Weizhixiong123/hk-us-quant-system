@@ -25,7 +25,7 @@ from quant.live.scheduler import LiveScheduler, SchedulerAction
 from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
 from quant.live.store import DbPath, list_live_events, record_live_event
-from quant.live.translate import GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
+from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 from quant.live.trend import (
     TrendPosition,
     build_month_end_watchlist,
@@ -453,13 +453,16 @@ class LiveRuntime:
 
 
 class DryRunGateway:
-    def __init__(self, state: LiveGatewayState) -> None:
+    def __init__(self, state: LiveGatewayState, initial_cash: float = 1_000_000.0) -> None:
         self.state = state
         self.subscribed: list[str] = []
         self._positions: dict[tuple[str, str], GatewayPosition] = {}
+        self._cash = float(initial_cash)
+        self._last_prices: dict[str, float] = {}
 
     def connect(self) -> None:
         self.state.set_connected(True, "DRY RUN 网关已连接，仅记录不触达券商")
+        self._publish_account()
 
     def subscribe(self, symbols: list[str], exchange: str | None = None) -> None:
         for symbol in symbols:
@@ -490,6 +493,21 @@ class DryRunGateway:
             )
         )
         self._update_position(symbol, direction, offset, price, volume)
+        # 现金按买卖方向增减：卖出("空")回笼现金，买入("多")占用现金
+        if "空" in direction:
+            self._cash += price * volume
+        else:
+            self._cash -= price * volume
+        self._last_prices[symbol] = price
+        self.state.update_tick(
+            GatewayTick(
+                symbol=symbol,
+                last_price=price,
+                volume=volume,
+                time=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        self._publish_account()
         return order_id
 
     def close(self) -> None:
@@ -511,6 +529,20 @@ class DryRunGateway:
             position = GatewayPosition(symbol, position_direction, new_volume, current.price if current else price, 0.0)
         self._positions[key] = position
         self.state.update_position(position)
+
+    def _publish_account(self) -> None:
+        holdings_value = sum(
+            pos.volume * self._last_prices.get(pos.symbol, pos.price)
+            for pos in self._positions.values()
+        )
+        self.state.update_account(
+            GatewayAccount(
+                account_id="DRY-RUN",
+                balance=round(self._cash + holdings_value, 2),
+                available=round(self._cash, 2),
+                frozen=round(holdings_value, 2),
+            )
+        )
 
 
 def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams | None = None) -> LiveRuntime:
@@ -536,7 +568,7 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
     data_provider = DefaultLiveDataProvider(market_data)
     gateway: RuntimeGateway
     if config.dry_run:
-        gateway = DryRunGateway(live_state)
+        gateway = DryRunGateway(live_state, initial_cash=config.default_equity)
     elif config.broker == "tiger":
         from quant.live.config import load_tiger_config
 
