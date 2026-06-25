@@ -9,22 +9,22 @@ from app.api.routes import router
 from app.core.config import settings
 from app.services.state import AppState
 from quant.live.params import LiveParams
-from quant.live.runtime import build_live_runtime_from_env
+from quant.live.runtime_manager import RuntimeManager
 from quant.live.state import LiveGatewayState
 
 
 def create_app() -> FastAPI:
     live_state = LiveGatewayState()
     live_params = LiveParams()
-    live_runtime = build_live_runtime_from_env(live_state, live_params)
+    runtime_manager = RuntimeManager(live_state, live_params)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        await app.state.live_runtime.start()
+        await app.state.runtime_manager.start()
         try:
             yield
         finally:
-            await app.state.live_runtime.stop()
+            await app.state.runtime_manager.stop()
 
     app = FastAPI(
         title=settings.app_name,
@@ -33,7 +33,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.live_state = live_state
-    app.state.live_runtime = live_runtime
+    app.state.runtime_manager = runtime_manager
     app.state.quant_state = AppState(app.state.live_state, live_params)
     app.add_middleware(
         CORSMiddleware,
