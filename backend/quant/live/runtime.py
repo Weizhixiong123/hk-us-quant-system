@@ -24,7 +24,7 @@ from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.scheduler import LiveScheduler, SchedulerAction
 from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
-from quant.live.store import DbPath, list_live_events, record_live_event
+from quant.live.store import DbPath, list_live_events, live_db_path_for_mode, record_live_event
 from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 from quant.live.trend import (
     TrendPosition,
@@ -546,7 +546,8 @@ class DryRunGateway:
 
 
 def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams | None = None) -> LiveRuntime:
-    settings = load_live_settings().get("runtime", {})
+    all_settings = load_live_settings()
+    settings = all_settings.get("runtime", {})
     config = RuntimeConfig(
         enabled=_env_bool("LIVE_RUNTIME_ENABLED", bool(settings.get("enabled", False))),
         dry_run=_env_bool("LIVE_RUNTIME_DRY_RUN", bool(settings.get("dry_run", True))),
@@ -585,6 +586,7 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
         market_data=market_data,
         config=config,
         params=params,
+        db_path=live_db_path_for_mode(all_settings),
     )
 
 

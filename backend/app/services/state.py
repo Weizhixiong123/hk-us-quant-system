@@ -27,7 +27,7 @@ from quant.data.universe import all_symbols
 from quant.live.params import LiveParams
 from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
-from quant.live.store import list_live_events
+from quant.live.store import list_live_events, live_db_path_for_mode
 
 
 class AppState:
@@ -690,8 +690,13 @@ class AppState:
             )
         return trades
 
+    def _current_db_path(self):
+        if self.db_path is not None:
+            return self.db_path
+        return live_db_path_for_mode(load_live_settings())
+
     def _live_watchlist(self) -> list[WatchSymbol]:
-        events = list_live_events(kind="signal", db_path=self.db_path)
+        events = list_live_events(kind="signal", db_path=self._current_db_path())
         names = {info.symbol: info.name for info in all_symbols()}
         rows: list[WatchSymbol] = []
         seen: set[str] = set()
@@ -717,7 +722,7 @@ class AppState:
         return rows
 
     def _live_signals(self) -> list[Signal]:
-        events = list_live_events(kind="signal", db_path=self.db_path)
+        events = list_live_events(kind="signal", db_path=self._current_db_path())
         signals: list[Signal] = []
         for event in events:
             symbol = event.symbol or ""
