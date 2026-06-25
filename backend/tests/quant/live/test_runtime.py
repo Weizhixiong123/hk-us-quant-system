@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from quant.live.market_data import Bar
-from quant.live.runtime import DryRunGateway, LiveRuntime, RuntimeConfig
+from quant.live.runtime import (
+    DryRunGateway,
+    LiveRuntime,
+    RuntimeConfig,
+    build_live_runtime_from_env,
+)
 from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.scheduler import LiveScheduler
 from quant.live.state import LiveGatewayState
@@ -71,6 +76,41 @@ def _runtime(tmp_path):
     )
     gateway.connect()
     return runtime, gateway
+
+
+def test_build_live_runtime_uses_broker_env(monkeypatch):
+    live_state = LiveGatewayState()
+    monkeypatch.setenv("LIVE_RUNTIME_BROKER", "tiger")
+    monkeypatch.setenv("LIVE_RUNTIME_DRY_RUN", "1")
+
+    runtime = build_live_runtime_from_env(live_state)
+
+    assert runtime.config.broker == "tiger"
+    assert isinstance(runtime.gateway, DryRunGateway)
+
+
+def test_build_live_runtime_rejects_unknown_broker(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("LIVE_RUNTIME_BROKER", "unknown")
+
+    with pytest.raises(ValueError, match="LIVE_RUNTIME_BROKER"):
+        build_live_runtime_from_env(LiveGatewayState())
+
+
+def test_build_live_runtime_uses_settings_file(monkeypatch, tmp_path):
+    from quant.live.settings import save_live_settings
+
+    path = tmp_path / "live-settings.json"
+    save_live_settings({"runtime": {"broker": "tiger", "enabled": True}}, path)
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(path))
+    monkeypatch.delenv("LIVE_RUNTIME_BROKER", raising=False)
+    monkeypatch.delenv("LIVE_RUNTIME_ENABLED", raising=False)
+
+    runtime = build_live_runtime_from_env(LiveGatewayState())
+
+    assert runtime.config.broker == "tiger"
+    assert runtime.config.enabled is True
 
 
 def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):

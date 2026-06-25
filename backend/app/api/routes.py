@@ -8,6 +8,8 @@ from app.models.schemas import (
     BacktestRequest,
     BacktestResult,
     DashboardSnapshot,
+    LiveSettingsSnapshot,
+    LiveSettingsUpdate,
     Order,
     Position,
     Signal,
@@ -19,6 +21,7 @@ from app.models.schemas import (
     WatchSymbol,
 )
 from app.services.state import AppState
+from quant.live.settings import load_live_settings, public_live_settings, save_live_settings
 
 router = APIRouter()
 
@@ -36,12 +39,28 @@ def health(request: Request) -> dict[str, str]:
         "mode": "live-ready",
         "runtime_enabled": str(bool(runtime and runtime.config.enabled)).lower(),
         "runtime_dry_run": str(bool(runtime and runtime.config.dry_run)).lower(),
+        "runtime_broker": runtime.config.broker if runtime else "futu",
     }
 
 
 @router.get("/dashboard", response_model=DashboardSnapshot)
 def dashboard(request: Request) -> DashboardSnapshot:
     return get_state(request).dashboard()
+
+
+@router.get("/live-settings", response_model=LiveSettingsSnapshot)
+def live_settings() -> dict:
+    return public_live_settings(load_live_settings())
+
+
+@router.put("/live-settings", response_model=LiveSettingsSnapshot)
+def update_live_settings(payload: LiveSettingsUpdate) -> dict:
+    update = payload.model_dump(exclude_unset=True, exclude_none=True)
+    try:
+        settings = save_live_settings(update)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return public_live_settings(settings)
 
 
 @router.get("/strategies", response_model=list[StrategyConfig])

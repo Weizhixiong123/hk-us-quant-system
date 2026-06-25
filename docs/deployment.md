@@ -28,13 +28,15 @@ npm run dev
 2. 确认账号开通 OpenAPI。
 3. 在富途 App 开通模拟交易。
 4. 确认 FutuOpenD 可以返回 `SIMULATE` 账户。
-5. 安装 vnpy 与 `vnpy_futu`，把 `backend/app/gateways/futu.py` 替换为真实 vnpy 网关调用。
+5. 安装 vnpy 与 `vnpy_futu`，设置 `LIVE_RUNTIME_BROKER=futu`、`LIVE_RUNTIME_DRY_RUN=0` 后启动后端。
 
 ### 老虎
 
 1. 完成老虎开发者认证。
 2. 获取 `tiger_id`、RSA 私钥和 Paper 模拟账户号。
-3. 安装 vnpy 与 `vnpy_tiger`，把 `backend/app/gateways/tiger.py` 替换为真实 vnpy 网关调用。
+3. 安装 `vnpy_tiger`，当前 pip 源找不到时可用 `pip install git+https://github.com/weijiaxing/vnpy_tiger.git`。
+4. 设置 `LIVE_RUNTIME_BROKER=tiger`、`LIVE_RUNTIME_DRY_RUN=0` 后启动后端。
+5. sandbox 使用 `TIGER_ENVIRONMENT=sandbox`；live 还需要 `TIGER_LIVE_TRADING_CONFIRM=I_UNDERSTAND_TIGER_REAL_MONEY_RISK`。
 
 ## 3. 生产部署建议
 
@@ -50,4 +52,3 @@ npm run dev
 - 确认空头交易只对券商返回可做空/可借券标的开放。
 - 模拟盘至少跑完一个完整交易日，核对开仓、止损、止盈、尾盘清仓和日志。
 - 小资金实盘前，必须复核滑点、成交费用、最小交易单位和交易时段。
-

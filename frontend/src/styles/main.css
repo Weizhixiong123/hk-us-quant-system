@@ -38,7 +38,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -147,7 +149,8 @@ h3 {
 
 .stream-pill,
 .text-button,
-.icon-button {
+.icon-button,
+.view-toggle button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -178,10 +181,27 @@ h3 {
   border-radius: 8px;
 }
 
-.icon-button.active {
+.icon-button.active,
+.view-toggle button.active {
   color: white;
   border-color: var(--accent);
   background: var(--accent);
+}
+
+.view-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 38px);
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.view-toggle button {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
 }
 
 .text-button {
@@ -197,6 +217,15 @@ h3 {
   border-radius: 8px;
   color: var(--loss);
   background: rgba(199, 71, 64, 0.08);
+}
+
+.success-bar {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(22, 128, 93, 0.24);
+  border-radius: 8px;
+  color: var(--gain);
+  background: rgba(22, 128, 93, 0.08);
 }
 
 .metric-strip {
@@ -651,11 +680,203 @@ meter {
   color: var(--muted);
 }
 
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(520px, 1.1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.settings-hero,
+.settings-section {
+  align-self: start;
+}
+
+.settings-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.settings-status > div {
+  display: grid;
+  gap: 5px;
+  min-height: 74px;
+  padding: 12px;
+  border: 1px solid rgba(24, 32, 31, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.settings-status strong {
+  font-size: 18px;
+}
+
+.settings-status span,
+.settings-form small,
+.settings-foot,
+.live-ack span {
+  color: var(--muted);
+}
+
+.settings-status .danger strong {
+  color: var(--loss);
+}
+
+.settings-status .ok strong {
+  color: var(--gain);
+}
+
+.settings-section {
+  display: grid;
+  gap: 16px;
+}
+
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--ink);
+}
+
+.switch-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.segmented {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(94px, 1fr);
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.segmented button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.segmented button.active {
+  color: white;
+  background: var(--accent);
+}
+
+.segmented .danger-tab.active {
+  background: var(--loss);
+}
+
+.settings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-form.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-form label,
+.ack-input {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-form span,
+.ack-input span {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-form input,
+.settings-form select,
+.settings-form textarea,
+.ack-input input,
+.ack-input textarea {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(24, 32, 31, 0.14);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.settings-form textarea,
+.ack-input textarea {
+  resize: vertical;
+}
+
+.key-clear {
+  align-self: end;
+  min-height: 38px;
+}
+
+.live-ack {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid rgba(24, 32, 31, 0.1);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.live-ack.armed {
+  border-left-color: var(--loss);
+}
+
+.live-ack.armed svg {
+  color: var(--loss);
+}
+
+.save-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--accent-dark);
+  border-radius: 8px;
+  color: white;
+  background: var(--accent-dark);
+}
+
+.settings-foot {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
 @media (max-width: 1120px) {
   .metric-strip,
   .strategy-grid,
   .workspace-grid,
-  .lower-grid {
+  .lower-grid,
+  .settings-layout {
     grid-template-columns: 1fr;
   }
 
@@ -682,6 +903,7 @@ meter {
   .top-actions {
     width: 100%;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .server-time {
@@ -694,6 +916,16 @@ meter {
 
   .param-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-status,
+  .settings-form.two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .segmented {
+    width: 100%;
+    grid-auto-columns: minmax(0, 1fr);
   }
 
   .strategy-actions,

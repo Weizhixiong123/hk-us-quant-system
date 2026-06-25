@@ -19,4 +19,4 @@ dist/
 *.log
 *.sqlite3
 *.db
-
+backend/data/*.json

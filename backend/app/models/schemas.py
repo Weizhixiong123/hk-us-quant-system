@@ -13,6 +13,9 @@ SignalSide = Literal["long", "short", "exit", "rebalance", "watch"]
 Severity = Literal["info", "warning", "critical"]
 
 ParamValue = int | float | str | bool
+LiveBroker = Literal["futu", "tiger"]
+FutuTradeEnv = Literal["SIMULATE", "REAL"]
+TigerTradeEnv = Literal["sandbox", "live"]
 
 
 class AccountSummary(BaseModel):
@@ -181,4 +184,71 @@ class BacktestResult(BaseModel):
 class StreamMessage(BaseModel):
     event: Literal["snapshot"]
     data: DashboardSnapshot
+
+
+class LiveRuntimeSettings(BaseModel):
+    enabled: bool = False
+    dry_run: bool = True
+    broker: LiveBroker = "futu"
+    poll_interval_seconds: float = Field(default=2.0, gt=0)
+    default_equity: float = Field(default=1_000_000, gt=0)
+
+
+class FutuLiveSettings(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=11111, gt=0)
+    trd_env: FutuTradeEnv = "SIMULATE"
+    market: Market = "HK"
+    real_trading_confirmed: bool = False
+
+
+class TigerLiveSettings(BaseModel):
+    tiger_id: str = ""
+    account: str = ""
+    private_key: str | None = None
+    private_key_path: str = ""
+    tiger_public_key_path: str = ""
+    environment: TigerTradeEnv = "sandbox"
+    language: str = "zh_CN"
+    max_contracts: int = Field(default=100, ge=1)
+    use_preset_contracts: bool = False
+    market: Market = "US"
+    live_trading_confirmed: bool = False
+    clear_private_key: bool = False
+
+
+class PublicTigerLiveSettings(BaseModel):
+    tiger_id: str = ""
+    account: str = ""
+    private_key_path: str = ""
+    tiger_public_key_path: str = ""
+    private_key_configured: bool = False
+    environment: TigerTradeEnv = "sandbox"
+    language: str = "zh_CN"
+    max_contracts: int = 100
+    use_preset_contracts: bool = False
+    market: Market = "US"
+    live_trading_confirmed: bool = False
+
+
+class LiveSafetySettings(BaseModel):
+    pause_new_orders: bool = False
+    close_only: bool = False
+    operator_note: str = ""
+
+
+class LiveSettingsUpdate(BaseModel):
+    runtime: LiveRuntimeSettings | None = None
+    futu: FutuLiveSettings | None = None
+    tiger: TigerLiveSettings | None = None
+    safety: LiveSafetySettings | None = None
+
+
+class LiveSettingsSnapshot(BaseModel):
+    runtime: LiveRuntimeSettings
+    futu: FutuLiveSettings
+    tiger: PublicTigerLiveSettings
+    safety: LiveSafetySettings
+    saved_at: datetime
+    restart_required: bool = True
 

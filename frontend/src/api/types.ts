@@ -2,6 +2,9 @@ export type Market = "HK" | "US";
 export type StrategyState = "idle" | "running" | "paused" | "blocked";
 export type AutomationMode = "full_auto" | "semi_auto";
 export type ParamValue = string | number | boolean;
+export type LiveBroker = "futu" | "tiger";
+export type FutuTradeEnv = "SIMULATE" | "REAL";
+export type TigerTradeEnv = "sandbox" | "live";
 
 export interface AccountSummary {
   currency: string;
@@ -156,5 +159,60 @@ export interface BacktestResult {
   trades: number;
   equity_curve: EquityPoint[];
   notes: string[];
+}
+
+export interface LiveRuntimeSettings {
+  enabled: boolean;
+  dry_run: boolean;
+  broker: LiveBroker;
+  poll_interval_seconds: number;
+  default_equity: number;
+}
+
+export interface FutuLiveSettings {
+  host: string;
+  port: number;
+  trd_env: FutuTradeEnv;
+  market: Market;
+  real_trading_confirmed: boolean;
+}
+
+export interface TigerLiveSettings {
+  tiger_id: string;
+  account: string;
+  private_key_path: string;
+  tiger_public_key_path: string;
+  private_key_configured?: boolean;
+  environment: TigerTradeEnv;
+  language: string;
+  max_contracts: number;
+  use_preset_contracts: boolean;
+  market: Market;
+  live_trading_confirmed: boolean;
+}
+
+export interface LiveSafetySettings {
+  pause_new_orders: boolean;
+  close_only: boolean;
+  operator_note: string;
+}
+
+export interface LiveSettingsSnapshot {
+  runtime: LiveRuntimeSettings;
+  futu: FutuLiveSettings;
+  tiger: TigerLiveSettings;
+  safety: LiveSafetySettings;
+  saved_at: string;
+  restart_required: boolean;
+}
+
+export interface LiveSettingsUpdate {
+  runtime?: Partial<LiveRuntimeSettings>;
+  futu?: Partial<FutuLiveSettings>;
+  tiger?: Partial<TigerLiveSettings> & {
+    private_key?: string;
+    clear_private_key?: boolean;
+  };
+  safety?: Partial<LiveSafetySettings>;
 }
 

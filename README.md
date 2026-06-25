@@ -53,13 +53,10 @@ npm run dev
 - MACD 计算、交叉、柱体缩短、背离识别的纯函数
 - 中长线选股筛选纯函数
 - 日内交易风控函数，包括日亏损、持仓数量、止损禁开、做空、PDT
-- 富途/老虎网关适配类占位，后续接入 `vnpy_futu` / `vnpy_tiger`
+- 实盘运行时支持按 `LIVE_RUNTIME_BROKER` 切换富途/老虎 vn.py 网关
 
 ## 后续接入顺序
 
 1. 接入历史数据源，替换 `AppState` 中的模拟行情与候选池。
-2. 将 `strategies/` 中的纯函数封装进 vnpy `CtaTemplate` 与 `PortfolioTemplate`。
-3. 配置富途 FutuOpenD 与老虎 tigeropen 凭证，补齐 gateway 实盘/模拟盘路由。
-4. 增加数据库持久化，保存订单、成交、日志、回测结果和参数版本。
-5. 增加回测报告导出与参数优化任务队列。
-
+2. 配置富途 FutuOpenD 与老虎 tigeropen 凭证，先用模拟盘/sandbox 跑满完整交易日。
+3. 增加回测报告导出与参数优化任务队列。

@@ -2,6 +2,8 @@ import type {
   BacktestRequest,
   BacktestResult,
   DashboardSnapshot,
+  LiveSettingsSnapshot,
+  LiveSettingsUpdate,
   ParamValue,
   StrategyConfig
 } from "./types";
@@ -29,6 +31,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchDashboard(): Promise<DashboardSnapshot> {
   return request<DashboardSnapshot>("/dashboard");
+}
+
+export function fetchLiveSettings(): Promise<LiveSettingsSnapshot> {
+  return request<LiveSettingsSnapshot>("/live-settings");
+}
+
+export function saveLiveSettings(payload: LiveSettingsUpdate): Promise<LiveSettingsSnapshot> {
+  return request<LiveSettingsSnapshot>("/live-settings", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function toggleStrategy(strategyId: string, enabled: boolean): Promise<StrategyConfig> {

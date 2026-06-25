@@ -1,4 +1,8 @@
-from quant.live.gateway import _clean_symbol, _resolve_exchange
+from quant.live.gateway import (
+    _clean_symbol,
+    _resolve_exchange,
+    _tiger_setting_from_config,
+)
 
 
 class _Exchange:
@@ -23,6 +27,46 @@ def test_resolve_exchange_uses_config_market_and_explicit_override():
     assert _resolve_exchange("00700", "HK", _Exchange) == "SEHK"
     assert _resolve_exchange("AAPL", "US", _Exchange) == "SMART"
     assert _resolve_exchange("AAPL", "US", _Exchange, "NASDAQ") == "NASDAQ"
+
+
+def test_resolve_exchange_allows_gateway_specific_us_default():
+    assert (
+        _resolve_exchange("AAPL.US", "HK", _Exchange, us_default_exchange="NASDAQ")
+        == "NASDAQ"
+    )
+
+
+def test_tiger_setting_maps_config_keys():
+    from quant.live.config import TigerGatewayConfig
+
+    config = TigerGatewayConfig(
+        tiger_id="tid",
+        account="acc",
+        private_key="key",
+        private_key_path="",
+        tiger_public_key_path="/tmp/tiger.pub",
+        environment="sandbox",
+        language="zh_CN",
+        max_contracts=50,
+        use_preset_contracts=True,
+        market="US",
+        paper=True,
+        live_trading_confirmed=False,
+    )
+
+    setting = _tiger_setting_from_config(config)
+
+    assert setting == {
+        "tiger_id": "tid",
+        "account": "acc",
+        "private_key": "key",
+        "private_key_path": "",
+        "tiger_public_key_path": "/tmp/tiger.pub",
+        "environment": "sandbox",
+        "language": "zh_CN",
+        "max_contracts": "50",
+        "use_preset_contracts": "true",
+    }
 
 
 def test_bars_from_vnpy_maps_fields():
@@ -88,6 +132,32 @@ def test_query_history_minute_requires_connection():
 
     config = FutuGatewayConfig("127.0.0.1", 11111, "SIMULATE", "HK", True, False)
     gateway = FutuLiveGateway(config, LiveGatewayState())
+    with pytest.raises(RuntimeError):
+        gateway.query_history_minute("AAPL")
+
+
+def test_tiger_query_history_minute_requires_connection():
+    import pytest
+
+    from quant.live.config import TigerGatewayConfig
+    from quant.live.gateway import TigerLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    config = TigerGatewayConfig(
+        "",
+        "",
+        "",
+        "",
+        "",
+        "sandbox",
+        "zh_CN",
+        100,
+        False,
+        "US",
+        True,
+        False,
+    )
+    gateway = TigerLiveGateway(config, LiveGatewayState())
     with pytest.raises(RuntimeError):
         gateway.query_history_minute("AAPL")
 

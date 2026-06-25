@@ -11,7 +11,7 @@ from quant.live.clock import Market
 from quant.live.data_provider import DefaultLiveDataProvider, LiveDataProvider
 from quant.live.params import LiveParams
 from quant.live.executor import execute_exit_order, execute_intraday_entry, execute_portfolio_entry
-from quant.live.gateway import FutuLiveGateway
+from quant.live.gateway import FutuLiveGateway, TigerLiveGateway
 from quant.live.intraday import (
     IntradayPosition,
     build_premarket_watchlist,
@@ -22,6 +22,7 @@ from quant.live.market_data import BarAggregator
 from quant.live.risk import evaluate_live_order_risk
 from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.scheduler import LiveScheduler, SchedulerAction
+from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
 from quant.live.store import DbPath, list_live_events, record_live_event
 from quant.live.translate import GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
@@ -61,6 +62,7 @@ class RuntimeGateway(Protocol):
 class RuntimeConfig:
     enabled: bool = False
     dry_run: bool = True
+    broker: str = "futu"
     poll_interval_seconds: float = 2.0
     default_equity: float = 1_000_000.0
     max_daily_loss_pct: float = 3.0
@@ -512,17 +514,33 @@ class DryRunGateway:
 
 
 def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams | None = None) -> LiveRuntime:
+    settings = load_live_settings().get("runtime", {})
     config = RuntimeConfig(
-        enabled=_env_bool("LIVE_RUNTIME_ENABLED", False),
-        dry_run=_env_bool("LIVE_RUNTIME_DRY_RUN", True),
-        poll_interval_seconds=float(os.getenv("LIVE_RUNTIME_POLL_SECONDS", "2")),
-        default_equity=float(os.getenv("LIVE_RUNTIME_DEFAULT_EQUITY", "1000000")),
+        enabled=_env_bool("LIVE_RUNTIME_ENABLED", bool(settings.get("enabled", False))),
+        dry_run=_env_bool("LIVE_RUNTIME_DRY_RUN", bool(settings.get("dry_run", True))),
+        broker=_broker_from_env(str(settings.get("broker", "futu"))),
+        poll_interval_seconds=float(
+            os.getenv(
+                "LIVE_RUNTIME_POLL_SECONDS",
+                str(settings.get("poll_interval_seconds", "2")),
+            )
+        ),
+        default_equity=float(
+            os.getenv(
+                "LIVE_RUNTIME_DEFAULT_EQUITY",
+                str(settings.get("default_equity", "1000000")),
+            )
+        ),
     )
     market_data = BarAggregator()
     data_provider = DefaultLiveDataProvider(market_data)
     gateway: RuntimeGateway
     if config.dry_run:
         gateway = DryRunGateway(live_state)
+    elif config.broker == "tiger":
+        from quant.live.config import load_tiger_config
+
+        gateway = TigerLiveGateway(load_tiger_config(), live_state)
     else:
         from quant.live.config import load_futu_config
 
@@ -543,6 +561,13 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _broker_from_env(default: str = "futu") -> str:
+    broker = os.getenv("LIVE_RUNTIME_BROKER", default).strip().lower()
+    if broker not in {"futu", "tiger"}:
+        raise ValueError("LIVE_RUNTIME_BROKER must be futu or tiger")
+    return broker
 
 
 def _account_equity(snapshot: dict[str, Any], default: float) -> float:
