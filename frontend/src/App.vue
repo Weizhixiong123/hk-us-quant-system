@@ -6,6 +6,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ClipboardList,
+  Cog,
   Database,
   FileText,
   Home,
@@ -93,8 +94,12 @@ const navItems: NavItem[] = [
   { label: "订单管理", icon: ReceiptText },
   { label: "成交记录", icon: Database },
   { label: "风控中心", icon: ShieldCheck },
-  { label: "运行日志", icon: FileText }
+  { label: "运行日志", icon: FileText },
+  { label: "系统设置", icon: Cog }
 ];
+
+const appYear = new Date().getFullYear();
+const appVersion = "1.0.0";
 
 const streamLabel = computed(() => {
   switch (streamState.value) {
@@ -783,5 +788,14 @@ function timeOnly(value?: string): string {
         <LiveSettingsPanel v-else />
       </section>
     </div>
+
+    <footer class="ops-footer">
+      <span class="ops-footer-copy">© {{ appYear }} 港美股双策略量化系统 · 版本 {{ appVersion }}</span>
+      <span class="ops-footer-status" :class="error ? 'is-down' : 'is-up'">
+        <span>服务状态</span>
+        <i></i>
+        <strong>{{ error ? "异常" : "正常运行" }}</strong>
+      </span>
+    </footer>
   </main>
 </template>

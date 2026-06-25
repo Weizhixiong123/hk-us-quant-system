@@ -2038,3 +2038,57 @@ html {
   }
 }
 
+.ops-footer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 24px 6px 4px;
+  padding: 4px 2px;
+  color: var(--faint);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+.ops-footer-status {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ops-footer-status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(21, 155, 141, 0.16);
+}
+
+.ops-footer-status strong {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.ops-footer-status.is-down i {
+  background: var(--loss);
+  box-shadow: 0 0 0 3px rgba(199, 71, 64, 0.16);
+}
+
+.ops-footer-status.is-down strong {
+  color: var(--loss);
+}
+
+@media (max-width: 720px) {
+  .ops-footer {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .ops-footer-status {
+    position: static;
+  }
+}
+
