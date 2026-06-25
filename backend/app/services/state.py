@@ -24,6 +24,7 @@ from app.models.schemas import (
     WatchSymbol,
 )
 from quant.live.params import LiveParams
+from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
 
 
@@ -35,6 +36,7 @@ class AppState:
         self.live_state = live_state
         now = self._now()
         self.account = AccountSummary(
+            source="dry_run",
             total_equity=1_285_000,
             cash=515_500,
             buying_power=2_124_000,
@@ -276,7 +278,7 @@ class AppState:
             live_snapshot = self._live_snapshot()
             return DashboardSnapshot(
                 server_time=self._now(),
-                account=self._live_account(live_snapshot) or self.account,
+                account=self._dashboard_account(live_snapshot),
                 risk=self.risk_status(live_snapshot),
                 strategies=self.strategies,
                 positions=self._live_positions(live_snapshot) or self.positions,
@@ -293,6 +295,7 @@ class AppState:
             1 for position in self.positions if position.strategy_id == "intraday_macd"
         )
         live_snapshot = live_snapshot if live_snapshot is not None else self._live_snapshot()
+        account = self._dashboard_account(live_snapshot)
         gateway_connected = bool(live_snapshot and live_snapshot.get("connected"))
         gateway_detail = str(live_snapshot.get("detail", "")) if live_snapshot else "未初始化实盘网关"
         return [
@@ -305,8 +308,8 @@ class AppState:
             RiskRuleStatus(
                 code="daily_loss",
                 name="单日最大亏损",
-                status="pass" if self.account.day_pnl_pct > -3 else "blocked",
-                detail=f"当前 {self.account.day_pnl_pct:.2f}%，阈值 -3.00%",
+                status="pass" if account.day_pnl_pct > -3 else "blocked",
+                detail=f"当前 {account.day_pnl_pct:.2f}%，阈值 -3.00%",
             ),
             RiskRuleStatus(
                 code="intraday_position_count",
@@ -536,9 +539,40 @@ class AppState:
             return None
         return AccountSummary(
             currency="HKD/USD",
+            source="broker",
             total_equity=round(account.balance, 2),
             cash=round(account.available, 2),
             buying_power=round(account.available, 2),
+            day_pnl=0.0,
+            day_pnl_pct=0.0,
+            max_daily_loss_pct=self.account.max_daily_loss_pct,
+        )
+
+    def _dashboard_account(self, snapshot: dict | None) -> AccountSummary:
+        live_account = self._live_account(snapshot)
+        if live_account is not None:
+            return live_account
+
+        runtime = load_live_settings().get("runtime", {})
+        if bool(runtime.get("dry_run", True)):
+            equity = round(float(runtime.get("default_equity", 1_000_000.0)), 2)
+            return AccountSummary(
+                currency="DRY-RUN",
+                source="dry_run",
+                total_equity=equity,
+                cash=equity,
+                buying_power=equity,
+                day_pnl=0.0,
+                day_pnl_pct=0.0,
+                max_daily_loss_pct=self.account.max_daily_loss_pct,
+            )
+
+        return AccountSummary(
+            currency="券商未返回",
+            source="broker",
+            total_equity=0.0,
+            cash=0.0,
+            buying_power=0.0,
             day_pnl=0.0,
             day_pnl_pct=0.0,
             max_daily_loss_pct=self.account.max_daily_loss_pct,

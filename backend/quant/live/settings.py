@@ -37,8 +37,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "live_trading_confirmed": False,
     },
     "safety": {
-        "pause_new_orders": False,
-        "close_only": False,
         "operator_note": "",
     },
 }
@@ -142,8 +140,8 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     tiger["live_trading_confirmed"] = bool(tiger.get("live_trading_confirmed", False))
 
     safety = settings.setdefault("safety", {})
-    safety["pause_new_orders"] = bool(safety.get("pause_new_orders", False))
-    safety["close_only"] = bool(safety.get("close_only", False))
+    safety.pop("pause_new_orders", None)
+    safety.pop("close_only", None)
     safety["operator_note"] = str(safety.get("operator_note", ""))
     return settings
 

@@ -8,6 +8,7 @@ export type TigerTradeEnv = "sandbox" | "live";
 
 export interface AccountSummary {
   currency: string;
+  source: "dry_run" | "broker";
   total_equity: number;
   cash: number;
   buying_power: number;
@@ -192,8 +193,6 @@ export interface TigerLiveSettings {
 }
 
 export interface LiveSafetySettings {
-  pause_new_orders: boolean;
-  close_only: boolean;
   operator_note: string;
 }
 

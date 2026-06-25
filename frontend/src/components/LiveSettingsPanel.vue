@@ -2,12 +2,14 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import {
   AlertTriangle,
+  Building2,
   CheckCircle2,
-  KeyRound,
+  Clock3,
+  Link2,
   PlayCircle,
   Save,
-  ServerCog,
-  ShieldCheck
+  ShieldCheck,
+  UserRound
 } from "lucide-vue-next";
 import { fetchLiveSettings, saveLiveSettings } from "../api/client";
 import type {
@@ -59,8 +61,6 @@ const form = reactive<LiveSettingsSnapshot>({
     live_trading_confirmed: false
   },
   safety: {
-    pause_new_orders: false,
-    close_only: false,
     operator_note: ""
   },
   saved_at: "",
@@ -84,6 +84,7 @@ const liveAlreadyConfirmed = computed(() =>
     : form.tiger.live_trading_confirmed
 );
 const liveAckReady = computed(() => liveAlreadyConfirmed.value || liveAck.value.trim() === LIVE_ACK);
+const usesDefaultEquity = computed(() => runtimeMode.value === "dry_run");
 const canSave = computed(() => runtimeMode.value !== "live" || liveAckReady.value);
 
 function applySnapshot(snapshot: LiveSettingsSnapshot): void {
@@ -141,7 +142,9 @@ function buildPayload(): LiveSettingsUpdate {
       live_trading_confirmed:
         form.tiger.environment === "live" ? liveAckReady.value : false
     },
-    safety: { ...form.safety }
+    safety: {
+      operator_note: form.safety.operator_note
+    }
   };
 
   if (privateKeyDraft.value.trim()) {
@@ -196,248 +199,316 @@ onMounted(loadSettings);
 </script>
 
 <template>
-  <section class="settings-layout">
-    <article class="panel settings-hero">
-      <header class="panel-title">
+  <section class="settings-page">
+    <section class="settings-overview" aria-label="实盘配置概览">
+      <article class="panel settings-overview-card intro-card">
+        <div class="settings-icon">
+          <UserRound :size="26" />
+        </div>
         <div>
           <p class="eyebrow">LIVE CONFIG</p>
           <h2>客户实盘配置</h2>
+          <span>当前配置正在生效</span>
         </div>
-        <ServerCog :size="20" />
-      </header>
+      </article>
 
-      <div class="settings-status">
+      <article class="panel settings-overview-card">
+        <div class="settings-icon">
+          <Building2 :size="26" />
+        </div>
         <div>
+          <span>当前账户</span>
           <strong>{{ activeBrokerLabel }} · {{ runtimeMode }}</strong>
-          <span>{{ form.runtime.enabled ? "运行时已启用" : "运行时未启用" }}</span>
+          <small class="status-pill" :class="{ active: form.runtime.enabled }">
+            <CheckCircle2 :size="13" />
+            {{ form.runtime.enabled ? "运行时已启用" : "运行时未启用" }}
+          </small>
+        </div>
+      </article>
+
+      <article class="panel settings-overview-card">
+        <div class="settings-icon">
+          <Clock3 :size="26" />
         </div>
         <div>
-          <strong>{{ savedAt(form.saved_at) }}</strong>
           <span>最近保存</span>
+          <strong>{{ savedAt(form.saved_at) }}</strong>
+          <small>手动保存</small>
         </div>
-        <div :class="runtimeMode === 'live' ? 'danger' : 'ok'">
-          <strong>{{ runtimeMode === "live" ? "实盘" : "非实盘" }}</strong>
-          <span>{{ runtimeMode === "live" ? "需要客户确认" : "安全模式" }}</span>
+      </article>
+
+      <article class="panel settings-overview-card">
+        <div class="settings-icon">
+          <ShieldCheck :size="26" />
         </div>
-      </div>
-
-      <p v-if="message" class="success-bar">{{ message }}</p>
-      <p v-if="error" class="error-bar">{{ error }}</p>
-    </article>
-
-    <article class="panel settings-section">
-      <header class="panel-title">
         <div>
-          <p class="eyebrow">RUNTIME</p>
-          <h2>运行控制</h2>
+          <span>当前模式</span>
+          <strong :class="runtimeMode === 'live' ? 'danger-text' : 'ok-text'">
+            {{ runtimeMode === "live" ? "实盘" : "非实盘" }}
+          </strong>
+          <small>{{ runtimeMode === "live" ? "需要客户确认" : "安全模式" }}</small>
         </div>
-        <PlayCircle :size="19" />
-      </header>
+      </article>
+    </section>
 
-      <div class="setting-row">
-        <label class="switch-row">
-          <input v-model="form.runtime.enabled" type="checkbox" />
-          <span>启用后台运行时</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="form.safety.close_only" type="checkbox" />
-          <span>只允许平仓</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="form.safety.pause_new_orders" type="checkbox" />
-          <span>暂停新开仓</span>
-        </label>
-      </div>
+    <p v-if="message" class="success-bar settings-message">{{ message }}</p>
+    <p v-if="error" class="error-bar settings-message">{{ error }}</p>
 
-      <div class="segmented">
-        <button
-          type="button"
-          :class="{ active: form.runtime.broker === 'futu' }"
-          @click="setBroker('futu')"
-        >
-          富途
-        </button>
-        <button
-          type="button"
-          :class="{ active: form.runtime.broker === 'tiger' }"
-          @click="setBroker('tiger')"
-        >
-          老虎
-        </button>
-      </div>
+    <section class="settings-workspace">
+      <article class="panel settings-card runtime-card">
+        <header class="settings-card-head">
+          <div class="settings-heading">
+            <div class="settings-icon small">
+              <PlayCircle :size="24" />
+            </div>
+            <div>
+              <h2>运行控制</h2>
+              <p>配置自动交易运行方式</p>
+            </div>
+          </div>
+        </header>
 
-      <div class="segmented">
-        <button
-          type="button"
-          :class="{ active: runtimeMode === 'dry_run' }"
-          @click="setRuntimeMode('dry_run')"
-        >
-          Dry-run
-        </button>
-        <button
-          type="button"
-          :class="{ active: runtimeMode === 'sandbox' }"
-          @click="setRuntimeMode('sandbox')"
-        >
-          模拟盘
-        </button>
-        <button
-          type="button"
-          class="danger-tab"
-          :class="{ active: runtimeMode === 'live' }"
-          @click="setRuntimeMode('live')"
-        >
-          实盘
-        </button>
-      </div>
-
-      <div class="settings-form two-col">
-        <label>
-          <span>轮询间隔 / 秒</span>
-          <input v-model.number="form.runtime.poll_interval_seconds" type="number" min="0.5" step="0.5" />
-        </label>
-        <label>
-          <span>默认账户权益</span>
-          <input v-model.number="form.runtime.default_equity" type="number" min="1" step="1000" />
-        </label>
-      </div>
-    </article>
-
-    <article v-if="form.runtime.broker === 'futu'" class="panel settings-section">
-      <header class="panel-title">
-        <div>
-          <p class="eyebrow">FUTU</p>
-          <h2>富途连接</h2>
+        <div class="setting-row runtime-toggle">
+          <label class="switch-row">
+            <input v-model="form.runtime.enabled" type="checkbox" />
+            <span>启用后台运行时</span>
+          </label>
         </div>
-        <KeyRound :size="19" />
-      </header>
 
-      <div class="settings-form two-col">
-        <label>
-          <span>Host</span>
-          <input v-model.trim="form.futu.host" />
-        </label>
-        <label>
-          <span>Port</span>
-          <input v-model.number="form.futu.port" type="number" min="1" />
-        </label>
-        <label>
-          <span>交易环境</span>
-          <select v-model="form.futu.trd_env">
-            <option value="SIMULATE">SIMULATE</option>
-            <option value="REAL">REAL</option>
-          </select>
-        </label>
-        <label>
-          <span>默认市场</span>
-          <select v-model="form.futu.market">
-            <option value="HK">HK</option>
-            <option value="US">US</option>
-          </select>
-        </label>
-      </div>
-    </article>
-
-    <article v-else class="panel settings-section">
-      <header class="panel-title">
-        <div>
-          <p class="eyebrow">TIGER</p>
-          <h2>老虎连接</h2>
+        <div class="field-group">
+          <span class="field-title">交易平台</span>
+          <div class="segmented broker-segmented">
+            <button
+              type="button"
+              :class="{ active: form.runtime.broker === 'futu' }"
+              @click="setBroker('futu')"
+            >
+              富途
+            </button>
+            <button
+              type="button"
+              :class="{ active: form.runtime.broker === 'tiger' }"
+              @click="setBroker('tiger')"
+            >
+              老虎
+            </button>
+          </div>
         </div>
-        <KeyRound :size="19" />
-      </header>
 
-      <div class="settings-form two-col">
-        <label>
-          <span>Tiger ID</span>
-          <input v-model.trim="form.tiger.tiger_id" autocomplete="off" />
-        </label>
-        <label>
-          <span>账户号</span>
-          <input v-model.trim="form.tiger.account" autocomplete="off" />
-        </label>
-        <label>
-          <span>私钥文件路径</span>
-          <input v-model.trim="form.tiger.private_key_path" autocomplete="off" />
-        </label>
-        <label>
-          <span>老虎公钥路径</span>
-          <input v-model.trim="form.tiger.tiger_public_key_path" autocomplete="off" />
-        </label>
-        <label>
-          <span>私钥内容</span>
-          <textarea v-model="privateKeyDraft" rows="4" autocomplete="off" />
-          <small>{{ form.tiger.private_key_configured ? "已配置，留空则保持不变" : "未配置，推荐使用文件路径" }}</small>
-        </label>
-        <label class="switch-row key-clear">
-          <input v-model="clearPrivateKey" type="checkbox" />
-          <span>清除已保存私钥内容</span>
-        </label>
-        <label>
-          <span>交易环境</span>
-          <select v-model="form.tiger.environment">
-            <option value="sandbox">sandbox</option>
-            <option value="live">live</option>
-          </select>
-        </label>
-        <label>
-          <span>默认市场</span>
-          <select v-model="form.tiger.market">
-            <option value="US">US</option>
-            <option value="HK">HK</option>
-          </select>
-        </label>
-        <label>
-          <span>语言</span>
-          <input v-model.trim="form.tiger.language" />
-        </label>
-        <label>
-          <span>最大合约数</span>
-          <input v-model.number="form.tiger.max_contracts" type="number" min="1" />
-        </label>
-        <label class="switch-row key-clear">
-          <input v-model="form.tiger.use_preset_contracts" type="checkbox" />
-          <span>使用预设合约</span>
-        </label>
-      </div>
-    </article>
-
-    <article class="panel settings-section">
-      <header class="panel-title">
-        <div>
-          <p class="eyebrow">SAFETY</p>
-          <h2>实盘确认</h2>
+        <div class="field-group">
+          <span class="field-title">运行模式</span>
+          <div class="segmented mode-segmented">
+            <button
+              type="button"
+              :class="{ active: runtimeMode === 'dry_run' }"
+              @click="setRuntimeMode('dry_run')"
+            >
+              Dry-run
+            </button>
+            <button
+              type="button"
+              :class="{ active: runtimeMode === 'sandbox' }"
+              @click="setRuntimeMode('sandbox')"
+            >
+              模拟盘
+            </button>
+            <button
+              type="button"
+              class="danger-tab"
+              :class="{ active: runtimeMode === 'live' }"
+              @click="setRuntimeMode('live')"
+            >
+              实盘
+            </button>
+          </div>
         </div>
-        <ShieldCheck :size="19" />
-      </header>
 
-      <div class="live-ack" :class="{ armed: runtimeMode === 'live' }">
-        <AlertTriangle :size="18" />
-        <div>
-          <strong>{{ runtimeMode === "live" ? "实盘模式待确认" : "当前不触发实盘确认" }}</strong>
-          <span>启用实盘前由客户本人输入确认短语。</span>
+        <div class="settings-form" :class="{ 'two-col': usesDefaultEquity }">
+          <label>
+            <span>轮询间隔 / 秒</span>
+            <input v-model.number="form.runtime.poll_interval_seconds" type="number" min="0.5" step="0.5" />
+          </label>
+          <label v-if="usesDefaultEquity">
+            <span>Dry-run 账户权益</span>
+            <input v-model.number="form.runtime.default_equity" type="number" min="1" step="1000" />
+          </label>
         </div>
-      </div>
+      </article>
 
-      <label class="ack-input">
-        <span>确认短语</span>
-        <input v-model="liveAck" :placeholder="LIVE_ACK" />
-      </label>
+      <article v-if="form.runtime.broker === 'futu'" class="panel settings-card broker-card">
+        <header class="settings-card-head">
+          <div class="settings-heading">
+            <div class="settings-icon small">
+              <Link2 :size="24" />
+            </div>
+            <div>
+              <h2>富途连接</h2>
+              <p>配置富途开放平台连接信息</p>
+            </div>
+          </div>
+          <Link2 :size="19" />
+        </header>
 
-      <label class="ack-input">
-        <span>操作备注</span>
-        <textarea v-model="form.safety.operator_note" rows="3" />
-      </label>
+        <div class="settings-form two-col">
+          <label>
+            <span>Host</span>
+            <input v-model.trim="form.futu.host" />
+          </label>
+          <label>
+            <span>Port</span>
+            <input v-model.number="form.futu.port" type="number" min="1" />
+          </label>
+          <label>
+            <span>交易环境</span>
+            <select v-model="form.futu.trd_env">
+              <option value="SIMULATE">SIMULATE</option>
+              <option value="REAL">REAL</option>
+            </select>
+          </label>
+          <label>
+            <span>默认市场</span>
+            <select v-model="form.futu.market">
+              <option value="HK">HK</option>
+              <option value="US">US</option>
+            </select>
+          </label>
+        </div>
 
-      <button class="save-button" type="button" :disabled="saving || loading || !canSave" @click="saveSettings">
-        <Save :size="18" />
-        <span>{{ saving ? "保存中" : "保存配置" }}</span>
-      </button>
+        <div class="connection-note">
+          <ShieldCheck :size="28" />
+          <div>
+            <strong>连接状态</strong>
+            <span>配置已就绪，服务未启动</span>
+          </div>
+          <i />
+        </div>
+      </article>
 
-      <div class="settings-foot">
-        <CheckCircle2 :size="16" />
-        <span>保存后重启后端，运行时会按此配置连接 {{ activeBrokerLabel }}。</span>
-      </div>
-    </article>
+      <article v-else class="panel settings-card broker-card">
+        <header class="settings-card-head">
+          <div class="settings-heading">
+            <div class="settings-icon small">
+              <Link2 :size="24" />
+            </div>
+            <div>
+              <h2>老虎连接</h2>
+              <p>配置老虎证券开放平台连接信息</p>
+            </div>
+          </div>
+          <Link2 :size="19" />
+        </header>
+
+        <div class="settings-form two-col">
+          <label>
+            <span>Tiger ID</span>
+            <input v-model.trim="form.tiger.tiger_id" autocomplete="off" />
+          </label>
+          <label>
+            <span>账户号</span>
+            <input v-model.trim="form.tiger.account" autocomplete="off" />
+          </label>
+          <label>
+            <span>私钥文件路径</span>
+            <input v-model.trim="form.tiger.private_key_path" autocomplete="off" />
+          </label>
+          <label>
+            <span>老虎公钥路径</span>
+            <input v-model.trim="form.tiger.tiger_public_key_path" autocomplete="off" />
+          </label>
+          <label>
+            <span>私钥内容</span>
+            <textarea v-model="privateKeyDraft" rows="4" autocomplete="off" />
+            <small>{{ form.tiger.private_key_configured ? "已配置，留空则保持不变" : "未配置，推荐使用文件路径" }}</small>
+          </label>
+          <label class="switch-row key-clear">
+            <input v-model="clearPrivateKey" type="checkbox" />
+            <span>清除已保存私钥内容</span>
+          </label>
+          <label>
+            <span>交易环境</span>
+            <select v-model="form.tiger.environment">
+              <option value="sandbox">sandbox</option>
+              <option value="live">live</option>
+            </select>
+          </label>
+          <label>
+            <span>默认市场</span>
+            <select v-model="form.tiger.market">
+              <option value="US">US</option>
+              <option value="HK">HK</option>
+            </select>
+          </label>
+          <label>
+            <span>语言</span>
+            <input v-model.trim="form.tiger.language" />
+          </label>
+          <label>
+            <span>最大合约数</span>
+            <input v-model.number="form.tiger.max_contracts" type="number" min="1" />
+          </label>
+          <label class="switch-row key-clear">
+            <input v-model="form.tiger.use_preset_contracts" type="checkbox" />
+            <span>使用预设合约</span>
+          </label>
+        </div>
+
+        <div class="connection-note">
+          <ShieldCheck :size="28" />
+          <div>
+            <strong>连接状态</strong>
+            <span>配置已就绪，服务未启动</span>
+          </div>
+          <i />
+        </div>
+      </article>
+
+      <article class="panel settings-card safety-card">
+        <header class="settings-card-head">
+          <div class="settings-heading">
+            <div class="settings-icon small">
+              <ShieldCheck :size="24" />
+            </div>
+            <div>
+              <h2>实盘确认</h2>
+              <p>为保障资金安全，请完成确认</p>
+            </div>
+          </div>
+          <ShieldCheck :size="19" />
+        </header>
+
+        <div class="live-ack" :class="{ armed: runtimeMode === 'live' }">
+          <AlertTriangle :size="22" />
+          <div>
+            <strong>{{ runtimeMode === "live" ? "实盘模式待确认" : "当前不触发实盘确认" }}</strong>
+            <span>启用实盘前由客户本人输入确认短语。</span>
+          </div>
+        </div>
+
+        <label class="ack-input">
+          <span>确认短语</span>
+          <input v-model="liveAck" :placeholder="LIVE_ACK" />
+        </label>
+
+        <label class="ack-input note-input">
+          <span>操作备注（可选）</span>
+          <textarea
+            v-model="form.safety.operator_note"
+            rows="4"
+            placeholder="填写操作备注，便于后续审计与追踪（可选）"
+          />
+          <small>{{ form.safety.operator_note.length }} / 200</small>
+        </label>
+
+        <button class="save-button" type="button" :disabled="saving || loading || !canSave" @click="saveSettings">
+          <Save :size="22" />
+          <span>{{ saving ? "保存中" : "保存配置" }}</span>
+        </button>
+
+        <div class="settings-foot">
+          <CheckCircle2 :size="16" />
+          <span>保存后重启后端，运行时会按此配置连接 {{ activeBrokerLabel }}。</span>
+        </div>
+      </article>
+    </section>
   </section>
 </template>

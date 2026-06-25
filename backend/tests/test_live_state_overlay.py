@@ -22,6 +22,7 @@ def test_app_state_dashboard_uses_live_gateway_snapshot():
 
     dashboard = AppState(live_state).dashboard()
 
+    assert dashboard.account.source == "broker"
     assert dashboard.account.total_equity == 100_000
     assert dashboard.account.cash == 80_000
     assert dashboard.risk[0].code == "broker_connection"
@@ -42,7 +43,8 @@ def test_app_state_dashboard_falls_back_without_live_account():
 
     dashboard = state.dashboard()
 
-    assert dashboard.account.total_equity == 1_285_000
+    assert dashboard.account.source == "dry_run"
+    assert dashboard.account.total_equity == 1_000_000
     assert dashboard.positions
     assert dashboard.orders
     assert dashboard.risk[0].status == "blocked"

@@ -20,6 +20,7 @@ TigerTradeEnv = Literal["sandbox", "live"]
 
 class AccountSummary(BaseModel):
     currency: str = "USD/HKD"
+    source: Literal["dry_run", "broker"] = "dry_run"
     total_equity: float
     cash: float
     buying_power: float
@@ -232,8 +233,6 @@ class PublicTigerLiveSettings(BaseModel):
 
 
 class LiveSafetySettings(BaseModel):
-    pause_new_orders: bool = False
-    close_only: bool = False
     operator_note: str = ""
 
 
