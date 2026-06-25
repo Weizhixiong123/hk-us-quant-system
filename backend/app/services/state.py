@@ -695,6 +695,31 @@ class AppState:
             return self.db_path
         return live_db_path_for_mode(load_live_settings())
 
+    def trade_history(self, limit: int = 200) -> list[Trade]:
+        events = list_live_events(kind="trade", db_path=self._current_db_path(), limit=limit)
+        trades: list[Trade] = []
+        for event in events:
+            payload = event.payload or {}
+            symbol = str(payload.get("symbol", event.symbol or ""))
+            if not symbol:
+                continue
+            order_id = str(payload.get("order_id", ""))
+            trades.append(
+                Trade(
+                    id=str(payload.get("trade_id") or f"{order_id}:{symbol}"),
+                    order_id=order_id,
+                    symbol=symbol,
+                    market=_market_from_symbol(symbol),
+                    side=_order_side(
+                        str(payload.get("direction", "")), str(payload.get("offset", ""))
+                    ),
+                    quantity=int(payload.get("volume", 0)),
+                    price=float(payload.get("price", 0.0)),
+                    traded_at=_parse_live_time(str(payload.get("time", "")), self._now()),
+                )
+            )
+        return trades
+
     def _live_watchlist(self) -> list[WatchSymbol]:
         events = list_live_events(kind="signal", db_path=self._current_db_path())
         names = {info.symbol: info.name for info in all_symbols()}

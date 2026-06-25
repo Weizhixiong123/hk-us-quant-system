@@ -138,6 +138,14 @@ def trades(request: Request) -> list[Trade]:
     return get_state(request).current_trades()
 
 
+@router.get("/trades/history", response_model=list[Trade])
+def trade_history(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> list[Trade]:
+    return get_state(request).trade_history(limit)
+
+
 @router.get("/logs", response_model=list[TradeLog])
 def logs(request: Request) -> list[TradeLog]:
     return get_state(request).current_logs()

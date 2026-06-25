@@ -64,3 +64,40 @@ def test_build_runtime_uses_mode_specific_db(monkeypatch, tmp_path):
 
     runtime = build_live_runtime_from_env(LiveGatewayState())
     assert runtime.db_path.name == "live-dry_run.sqlite3"
+
+
+def test_trade_history_reads_trade_events(tmp_path):
+    from dataclasses import asdict
+
+    from app.services.state import AppState
+    from quant.live.state import LiveGatewayState
+    from quant.live.store import record_live_event
+    from quant.live.translate import GatewayTrade
+
+    db = tmp_path / "live-dry_run.sqlite3"
+    trade = GatewayTrade(
+        trade_id="T1",
+        order_id="O1",
+        symbol="AAPL",
+        direction="多",
+        offset="开",
+        price=198.4,
+        volume=100,
+        time="2026-06-25T13:00:00+00:00",
+    )
+    record_live_event(
+        kind="trade",
+        strategy_id="live",
+        symbol="AAPL",
+        payload={"event": "trade", **asdict(trade)},
+        db_path=db,
+    )
+
+    state = AppState(LiveGatewayState(), db_path=db)
+    history = state.trade_history()
+
+    assert len(history) == 1
+    assert history[0].symbol == "AAPL"
+    assert history[0].side == "buy"  # 多 + 开 → 买入
+    assert history[0].price == 198.4
+    assert history[0].quantity == 100
