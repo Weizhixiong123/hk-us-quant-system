@@ -1446,12 +1446,13 @@ html {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
   margin-top: 16px;
 }
 
 .ops-main-column {
   display: grid;
+  grid-template-rows: auto 1fr;
   gap: 16px;
   min-width: 0;
 }
@@ -1554,6 +1555,7 @@ html {
 
 .query-table-wrap {
   margin-top: 18px;
+  min-height: 318px;
   border: 1px solid rgba(24, 32, 31, 0.08);
   border-radius: 8px;
 }
