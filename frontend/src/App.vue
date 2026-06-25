@@ -337,6 +337,21 @@ function orderStatusLabel(status: string): string {
   }
 }
 
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  gateway: "连接",
+  risk: "风控",
+  intraday_macd: "策略一",
+  trend_portfolio: "策略二",
+  broker: "券商",
+  dry_run: "模拟",
+  backtest: "回测",
+  system: "系统"
+};
+
+function eventTypeLabel(type: string): string {
+  return EVENT_TYPE_LABELS[type] ?? type;
+}
+
 function eventFromLog(log: TradeLog): EventRow {
   return {
     id: log.id,
@@ -696,7 +711,7 @@ function timeOnly(value?: string): string {
               <div class="event-list compact">
                 <article v-for="event in eventRows" :key="event.id" :class="event.severity">
                   <time>{{ event.time }}</time>
-                  <strong>{{ event.type }}</strong>
+                  <strong>{{ eventTypeLabel(event.type) }}</strong>
                   <span>{{ event.content }}</span>
                 </article>
                 <p v-if="eventRows.length === 0" class="empty-inline">暂无事件</p>
