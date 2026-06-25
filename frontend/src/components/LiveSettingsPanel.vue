@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   UserRound
 } from "lucide-vue-next";
-import { fetchLiveSettings, saveLiveSettings } from "../api/client";
+import { fetchLiveSettings, reloadRuntime, saveLiveSettings } from "../api/client";
 import type {
   FutuTradeEnv,
   LiveBroker,
@@ -26,6 +26,7 @@ const LIVE_ACK = "我确认启用实盘交易";
 
 const loading = ref(false);
 const saving = ref(false);
+const applying = ref(false);
 const message = ref("");
 const error = ref("");
 const privateKeyDraft = ref("");
@@ -180,6 +181,34 @@ async function saveSettings(): Promise<void> {
     error.value = err instanceof Error ? err.message : "配置保存失败";
   } finally {
     saving.value = false;
+  }
+}
+
+async function saveAndApply(): Promise<void> {
+  if (!canSave.value) {
+    error.value = `请输入“${LIVE_ACK}”`;
+    return;
+  }
+  applying.value = true;
+  error.value = "";
+  message.value = "";
+  try {
+    applySnapshot(await saveLiveSettings(buildPayload()));
+    privateKeyDraft.value = "";
+    clearPrivateKey.value = false;
+    liveAck.value = "";
+    const result = await reloadRuntime();
+    if (result.ok) {
+      message.value = result.runtime_running
+        ? `已保存并应用：引擎运行中（${result.runtime_broker}${result.runtime_dry_run ? " · 干跑" : ""}）`
+        : "已保存并应用：引擎已停止";
+    } else {
+      error.value = `应用失败：${result.error ?? "未知错误"}`;
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "保存并应用失败";
+  } finally {
+    applying.value = false;
   }
 }
 
@@ -499,14 +528,19 @@ onMounted(loadSettings);
           <small>{{ form.safety.operator_note.length }} / 200</small>
         </label>
 
-        <button class="save-button" type="button" :disabled="saving || loading || !canSave" @click="saveSettings">
+        <button class="save-button" type="button" :disabled="saving || applying || loading || !canSave" @click="saveSettings">
           <Save :size="22" />
           <span>{{ saving ? "保存中" : "保存配置" }}</span>
         </button>
 
+        <button class="save-button apply-button" type="button" :disabled="saving || applying || loading || !canSave" @click="saveAndApply">
+          <CheckCircle2 :size="22" />
+          <span>{{ applying ? "应用中" : "保存并应用" }}</span>
+        </button>
+
         <div class="settings-foot">
           <CheckCircle2 :size="16" />
-          <span>保存后重启后端，运行时会按此配置连接 {{ activeBrokerLabel }}。</span>
+          <span>「保存并应用」即时生效（{{ activeBrokerLabel }}）；「保存配置」仅写入，需重启后端。</span>
         </div>
       </article>
     </section>

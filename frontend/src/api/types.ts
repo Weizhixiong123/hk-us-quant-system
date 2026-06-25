@@ -215,3 +215,12 @@ export interface LiveSettingsUpdate {
   safety?: Partial<LiveSafetySettings>;
 }
 
+export interface RuntimeReloadResult {
+  ok: boolean;
+  error: string | null;
+  runtime_running: boolean;
+  runtime_enabled: boolean;
+  runtime_dry_run: boolean;
+  runtime_broker: string;
+}
+

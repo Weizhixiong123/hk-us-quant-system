@@ -5,6 +5,7 @@ import type {
   LiveSettingsSnapshot,
   LiveSettingsUpdate,
   ParamValue,
+  RuntimeReloadResult,
   StrategyConfig
 } from "./types";
 
@@ -42,6 +43,10 @@ export function saveLiveSettings(payload: LiveSettingsUpdate): Promise<LiveSetti
     method: "PUT",
     body: JSON.stringify(payload)
   });
+}
+
+export function reloadRuntime(): Promise<RuntimeReloadResult> {
+  return request<RuntimeReloadResult>("/runtime/reload", { method: "POST" });
 }
 
 export function toggleStrategy(strategyId: string, enabled: boolean): Promise<StrategyConfig> {
