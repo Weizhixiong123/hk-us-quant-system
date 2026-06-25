@@ -2087,3 +2087,15 @@ html {
   }
 }
 
+.summary-head.clickable {
+  cursor: pointer;
+}
+
+.summary-head.clickable:hover h3 {
+  color: var(--accent-dark);
+}
+
+.trades-view {
+  min-width: 0;
+}
+

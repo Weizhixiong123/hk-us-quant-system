@@ -6,7 +6,8 @@ import type {
   LiveSettingsUpdate,
   ParamValue,
   RuntimeReloadResult,
-  StrategyConfig
+  StrategyConfig,
+  Trade
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -68,6 +69,10 @@ export function updateStrategyParams(
 
 export function fetchBacktests(limit = 20): Promise<BacktestResult[]> {
   return request<BacktestResult[]>(`/backtests?limit=${limit}`);
+}
+
+export function fetchTradeHistory(limit = 200): Promise<Trade[]> {
+  return request<Trade[]>(`/trades/history?limit=${limit}`);
 }
 
 export function createBacktest(payload: BacktestRequest): Promise<BacktestResult> {

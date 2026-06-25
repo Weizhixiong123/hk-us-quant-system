@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, type Component } from "vue";
+import { computed, ref, watch, type Component } from "vue";
 import {
   Activity,
   Briefcase,
@@ -23,10 +23,11 @@ import {
   WalletCards
 } from "lucide-vue-next";
 import LiveSettingsPanel from "./components/LiveSettingsPanel.vue";
+import { fetchTradeHistory } from "./api/client";
 import { useDashboard } from "./composables/useDashboard";
-import type { Market, RiskRuleStatus, Signal, TradeLog } from "./api/types";
+import type { Market, RiskRuleStatus, Signal, Trade, TradeLog } from "./api/types";
 
-type ViewName = "dashboard" | "settings";
+type ViewName = "dashboard" | "trades" | "settings";
 type QueryStatus = "triggered" | "selected" | "watching" | "pending";
 
 interface NavItem {
@@ -85,6 +86,22 @@ const {
 
 const activeView = ref<ViewName>("dashboard");
 
+const tradeHistory = ref<Trade[]>([]);
+
+async function loadTradeHistory(): Promise<void> {
+  try {
+    tradeHistory.value = await fetchTradeHistory();
+  } catch {
+    tradeHistory.value = [];
+  }
+}
+
+watch(activeView, (view) => {
+  if (view === "trades") {
+    loadTradeHistory();
+  }
+});
+
 const navItems: NavItem[] = [
   { label: "控制台", icon: Home, view: "dashboard" },
   { label: "实盘配置", icon: Settings2, view: "settings" },
@@ -92,7 +109,7 @@ const navItems: NavItem[] = [
   { label: "候选股票", icon: ListChecks },
   { label: "持仓管理", icon: Package },
   { label: "订单管理", icon: ReceiptText },
-  { label: "成交记录", icon: Database },
+  { label: "成交记录", icon: Database, view: "trades" },
   { label: "风控中心", icon: ShieldCheck },
   { label: "运行日志", icon: FileText },
   { label: "系统设置", icon: Cog }
@@ -664,7 +681,7 @@ function timeOnly(value?: string): string {
             </article>
 
             <article class="summary-panel">
-              <header class="summary-head">
+              <header class="summary-head clickable" @click="activeView = 'trades'">
                 <div>
                   <h3>最近成交</h3>
                   <p>订单与成交回报</p>
@@ -799,6 +816,50 @@ function timeOnly(value?: string): string {
             </aside>
           </section>
         </template>
+
+        <section v-else-if="activeView === 'trades'" class="trades-view">
+          <article class="query-panel">
+            <header class="query-head">
+              <div>
+                <h2>成交记录</h2>
+                <p>当前模式：{{ currentModeLabel }} · 共 {{ tradeHistory.length }} 笔（不同模式互相隔离）</p>
+              </div>
+              <button class="text-button" type="button" @click="loadTradeHistory">
+                <RefreshCw :size="16" />
+                <span>刷新</span>
+              </button>
+            </header>
+            <div class="query-table-wrap">
+              <table class="query-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>代码</th>
+                    <th>市场</th>
+                    <th>方向</th>
+                    <th>价格</th>
+                    <th>数量</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in tradeHistory" :key="item.id">
+                    <td>{{ time(item.traded_at) }}</td>
+                    <td><strong>{{ item.symbol }}</strong></td>
+                    <td>
+                      <span class="market-pill" :class="item.market.toLowerCase()">{{ item.market }}</span>
+                    </td>
+                    <td :class="sideTone(sideLabel(item.side))">{{ sideLabel(item.side) }}</td>
+                    <td>{{ item.price.toFixed(2) }}</td>
+                    <td>{{ item.quantity }}</td>
+                  </tr>
+                  <tr v-if="tradeHistory.length === 0">
+                    <td class="empty-row" colspan="6">暂无成交记录</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </section>
 
         <LiveSettingsPanel v-else />
       </section>
