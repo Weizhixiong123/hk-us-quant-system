@@ -23,17 +23,25 @@ from app.models.schemas import (
     TradeLog,
     WatchSymbol,
 )
+from quant.data.universe import all_symbols
 from quant.live.params import LiveParams
 from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
+from quant.live.store import list_live_events
 
 
 class AppState:
-    def __init__(self, live_state: LiveGatewayState | None = None, params: LiveParams | None = None) -> None:
+    def __init__(
+        self,
+        live_state: LiveGatewayState | None = None,
+        params: LiveParams | None = None,
+        db_path=None,
+    ) -> None:
         self.params = params or LiveParams()
         self._lock = RLock()
         self._rng = random.Random(42)
         self.live_state = live_state
+        self.db_path = db_path
         now = self._now()
         self.account = AccountSummary(
             source="dry_run",
@@ -285,14 +293,16 @@ class AppState:
                 positions = positions or self.positions
                 orders = orders or self.orders
                 trades = trades or self.trades
+            watchlist = self._live_watchlist() if has_live_account else self.watchlist
+            signals = self._live_signals() if has_live_account else self.signals
             return DashboardSnapshot(
                 server_time=self._now(),
                 account=self._dashboard_account(live_snapshot),
                 risk=self.risk_status(live_snapshot),
                 strategies=self.strategies,
                 positions=positions,
-                watchlist=self.watchlist,
-                signals=self.signals,
+                watchlist=watchlist,
+                signals=signals,
                 orders=orders,
                 trades=trades,
                 logs=self._live_logs(live_snapshot) + self.logs,
@@ -679,6 +689,57 @@ class AppState:
                 )
             )
         return trades
+
+    def _live_watchlist(self) -> list[WatchSymbol]:
+        events = list_live_events(kind="signal", db_path=self.db_path)
+        names = {info.symbol: info.name for info in all_symbols()}
+        rows: list[WatchSymbol] = []
+        seen: set[str] = set()
+        for event in events:
+            symbol = event.symbol or ""
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            payload = event.payload or {}
+            submitted = bool(payload.get("submitted", False))
+            rows.append(
+                WatchSymbol(
+                    symbol=symbol,
+                    name=names.get(symbol, symbol),
+                    market=_market_from_symbol(symbol),
+                    last_price=0.0,
+                    change_pct=0.0,
+                    turnover=0.0,
+                    score=0.85 if submitted else 0.6,
+                    tags=list(payload.get("reasons", [])),
+                )
+            )
+        return rows
+
+    def _live_signals(self) -> list[Signal]:
+        events = list_live_events(kind="signal", db_path=self.db_path)
+        signals: list[Signal] = []
+        for event in events:
+            symbol = event.symbol or ""
+            if not symbol:
+                continue
+            payload = event.payload or {}
+            submitted = bool(payload.get("submitted", False))
+            reasons = list(payload.get("reasons", []))
+            signals.append(
+                Signal(
+                    id=event.id,
+                    strategy_id=event.strategy_id,
+                    symbol=symbol,
+                    market=_market_from_symbol(symbol),
+                    side="long",
+                    confidence=0.8 if submitted else 0.5,
+                    reason=" / ".join(reasons) if reasons else "等待信号",
+                    created_at=event.created_at,
+                    status="executed" if submitted else "new",
+                )
+            )
+        return signals
 
     def _live_logs(self, snapshot: dict | None) -> list[TradeLog]:
         if snapshot is None:

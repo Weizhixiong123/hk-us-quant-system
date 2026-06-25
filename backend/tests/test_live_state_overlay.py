@@ -115,3 +115,51 @@ def test_risk_intraday_count_matches_live_positions():
 
     # 接网关后无真实持仓 → 0/3，与持仓栏(空)一致，而非 seed 的 1/3
     assert intraday.detail == "0/3"
+
+
+def test_dashboard_watchlist_from_live_signals(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": False, "reasons": ["15m 缩量", "5m 金叉"]},
+        db_path=db,
+    )
+
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+    state = AppState(live_state, db_path=db)
+
+    watchlist = state.dashboard().watchlist
+    aapl = next(w for w in watchlist if w.symbol == "AAPL")
+    assert aapl.market == "US"
+    assert aapl.tags == ["15m 缩量", "5m 金叉"]
+
+
+def test_dashboard_signals_from_live_events(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": True, "reasons": ["5m 金叉"]},
+        db_path=db,
+    )
+
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+    state = AppState(live_state, db_path=db)
+
+    aapl = next(s for s in state.dashboard().signals if s.symbol == "AAPL")
+    assert aapl.strategy_id == "intraday_macd"
+    assert aapl.reason == "5m 金叉"
+    assert aapl.status == "executed"
