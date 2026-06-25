@@ -102,3 +102,16 @@ def test_tick_skips_demo_drift_when_live_account_present():
     # 已接网关:不做随机演示漂移,连续推送一致
     assert first == second
     assert state.tick().positions == []
+
+
+def test_risk_intraday_count_matches_live_positions():
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+
+    risk = AppState(live_state).dashboard().risk
+    intraday = next(r for r in risk if r.code == "intraday_position_count")
+
+    # 接网关后无真实持仓 → 0/3，与持仓栏(空)一致，而非 seed 的 1/3
+    assert intraday.detail == "0/3"

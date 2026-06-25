@@ -300,10 +300,14 @@ class AppState:
             )
 
     def risk_status(self, live_snapshot: dict | None = None) -> list[RiskRuleStatus]:
-        intraday_positions = sum(
-            1 for position in self.positions if position.strategy_id == "intraday_macd"
-        )
         live_snapshot = live_snapshot if live_snapshot is not None else self._live_snapshot()
+        has_live_account = bool(live_snapshot and live_snapshot.get("account"))
+        if has_live_account:
+            intraday_positions = len(self._live_positions(live_snapshot))
+        else:
+            intraday_positions = sum(
+                1 for position in self.positions if position.strategy_id == "intraday_macd"
+            )
         account = self._dashboard_account(live_snapshot)
         gateway_connected = bool(live_snapshot and live_snapshot.get("connected"))
         gateway_detail = str(live_snapshot.get("detail", "")) if live_snapshot else "未初始化实盘网关"
