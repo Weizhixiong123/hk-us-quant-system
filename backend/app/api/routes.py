@@ -12,6 +12,7 @@ from app.models.schemas import (
     LiveSettingsUpdate,
     Order,
     Position,
+    RuntimeReloadResult,
     Signal,
     StrategyConfig,
     StrategyParamsUpdate,
@@ -64,6 +65,23 @@ def update_live_settings(payload: LiveSettingsUpdate) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return public_live_settings(settings)
+
+
+@router.post("/runtime/reload", response_model=RuntimeReloadResult)
+async def reload_runtime(request: Request) -> dict:
+    manager = getattr(request.app.state, "runtime_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="runtime manager 未初始化")
+    result = await manager.reload()
+    runtime = manager.runtime
+    return {
+        "ok": result["ok"],
+        "error": result["error"],
+        "runtime_running": runtime is not None,
+        "runtime_enabled": bool(runtime and runtime.config.enabled),
+        "runtime_dry_run": bool(runtime and runtime.config.dry_run),
+        "runtime_broker": runtime.config.broker if runtime else "futu",
+    }
 
 
 @router.get("/strategies", response_model=list[StrategyConfig])

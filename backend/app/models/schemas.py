@@ -251,3 +251,12 @@ class LiveSettingsSnapshot(BaseModel):
     saved_at: datetime
     restart_required: bool = True
 
+
+class RuntimeReloadResult(BaseModel):
+    ok: bool
+    error: str | None = None
+    runtime_running: bool
+    runtime_enabled: bool
+    runtime_dry_run: bool
+    runtime_broker: str
+

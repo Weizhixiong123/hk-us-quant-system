@@ -39,3 +39,25 @@ def test_live_settings_api_rejects_live_without_confirmation(monkeypatch, tmp_pa
         assert exc.status_code == 400
     else:
         raise AssertionError("expected route to reject live without confirmation")
+
+
+def test_runtime_reload_returns_running_state(monkeypatch, tmp_path):
+    import os
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    monkeypatch.setenv("LIVE_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("LIVE_RUNTIME_DRY_RUN", "1")
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(tmp_path / "live-settings.json"))
+    os.makedirs(tmp_path / "data", exist_ok=True)
+
+    app = create_app()
+    with TestClient(app) as client:
+        resp = client.post("/api/runtime/reload")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["runtime_running"] is True
+        assert body["runtime_dry_run"] is True
