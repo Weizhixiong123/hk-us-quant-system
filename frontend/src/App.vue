@@ -151,15 +151,32 @@ const queriedStocks = computed<QueryRow[]>(() =>
   })
 );
 
-const queryTabs = computed(() => [
-  { label: "全部", count: queriedStocks.value.length, active: true },
-  { label: "策略一 · 日内 MACD", count: queriedStocks.value.filter((item) => item.strategy === "策略一").length },
-  { label: "策略二 · 中长线选股", count: queriedStocks.value.filter((item) => item.strategy === "策略二").length },
-  { label: "已触发", count: queriedStocks.value.filter((item) => item.status === "triggered").length },
-  { label: "观察中", count: queriedStocks.value.filter((item) => item.status === "watching").length }
-]);
+type QueryTabKey = "all" | "intraday" | "trend" | "triggered" | "watching";
 
-const visibleQueriedStocks = computed(() => queriedStocks.value.slice(0, 6));
+const queryTabDefs: { key: QueryTabKey; label: string; match: (item: QueryRow) => boolean }[] = [
+  { key: "all", label: "全部", match: () => true },
+  { key: "intraday", label: "策略一 · 日内 MACD", match: (item) => item.strategy === "策略一" },
+  { key: "trend", label: "策略二 · 中长线选股", match: (item) => item.strategy === "策略二" },
+  { key: "triggered", label: "已触发", match: (item) => item.status === "triggered" },
+  { key: "watching", label: "观察中", match: (item) => item.status === "watching" }
+];
+
+const activeQueryTab = ref<QueryTabKey>("all");
+
+const queryTabs = computed(() =>
+  queryTabDefs.map((def) => ({
+    key: def.key,
+    label: def.label,
+    count: queriedStocks.value.filter(def.match).length
+  }))
+);
+
+const filteredQueriedStocks = computed(() => {
+  const def = queryTabDefs.find((tab) => tab.key === activeQueryTab.value) ?? queryTabDefs[0];
+  return queriedStocks.value.filter(def.match);
+});
+
+const visibleQueriedStocks = computed(() => filteredQueriedStocks.value.slice(0, 6));
 
 const activePositions = computed(() => positions.value.slice(0, 4));
 
@@ -516,9 +533,10 @@ function timeOnly(value?: string): string {
               <div class="query-tabs">
                 <button
                   v-for="tab in queryTabs"
-                  :key="tab.label"
+                  :key="tab.key"
                   type="button"
-                  :class="{ active: tab.active }"
+                  :class="{ active: tab.key === activeQueryTab }"
+                  @click="activeQueryTab = tab.key"
                 >
                   <span>{{ tab.label }}</span>
                   <strong>{{ tab.count }}</strong>

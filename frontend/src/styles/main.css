@@ -1520,10 +1520,16 @@ html {
   color: var(--ink);
   background: transparent;
   font-weight: 800;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
 }
 
 .query-tabs button:last-child {
   border-right: 0;
+}
+
+.query-tabs button:not(.active):hover {
+  background: rgba(24, 32, 31, 0.05);
 }
 
 .query-tabs button.active {
