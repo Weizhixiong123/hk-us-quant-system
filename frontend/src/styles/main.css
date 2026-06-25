@@ -1329,9 +1329,8 @@ html {
 }
 
 .side-menu button.active {
-  color: white;
-  background: linear-gradient(135deg, var(--accent-dark), var(--accent));
-  box-shadow: 0 10px 20px rgba(13, 111, 101, 0.2);
+  color: var(--accent-dark);
+  background: rgba(21, 155, 141, 0.12);
 }
 
 .side-menu button:disabled {
