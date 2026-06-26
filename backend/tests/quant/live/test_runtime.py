@@ -102,15 +102,23 @@ def test_build_live_runtime_uses_settings_file(monkeypatch, tmp_path):
     from quant.live.settings import save_live_settings
 
     path = tmp_path / "live-settings.json"
-    save_live_settings({"runtime": {"broker": "tiger", "enabled": True}}, path)
+    save_live_settings(
+        {
+            "runtime": {"broker": "tiger", "enabled": True},
+            "tiger": {"markets": ["US", "HK"]},
+        },
+        path,
+    )
     monkeypatch.setenv("LIVE_SETTINGS_PATH", str(path))
     monkeypatch.delenv("LIVE_RUNTIME_BROKER", raising=False)
     monkeypatch.delenv("LIVE_RUNTIME_ENABLED", raising=False)
+    monkeypatch.delenv("LIVE_RUNTIME_MARKETS", raising=False)
 
     runtime = build_live_runtime_from_env(LiveGatewayState())
 
     assert runtime.config.broker == "tiger"
     assert runtime.config.enabled is True
+    assert runtime.scheduler.markets == ("US", "HK")
 
 
 def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):
@@ -118,6 +126,29 @@ def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):
     at = datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc)
 
     runtime._run_intraday_premarket_scan(at)
+
+    assert runtime.runtime_state.intraday_watchlist == ["AAPL"]
+    assert gateway.subscribed == ["AAPL"]
+    events = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")
+    assert events[0].payload["symbols"] == ["AAPL"]
+
+
+def test_runtime_catches_up_missed_us_premarket_scan(tmp_path):
+    live_state = LiveGatewayState()
+    gateway = DryRunGateway(live_state)
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=gateway,
+        scheduler=LiveScheduler(markets=("US",)),
+        data_provider=FakeDataProvider(),
+        market_data=FakeMarketData(),
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+    gateway.connect()
+
+    runtime.run_once(datetime(2026, 6, 23, 13, 3, tzinfo=timezone.utc))
 
     assert runtime.runtime_state.intraday_watchlist == ["AAPL"]
     assert gateway.subscribed == ["AAPL"]

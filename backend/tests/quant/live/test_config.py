@@ -11,6 +11,7 @@ def test_defaults(monkeypatch):
         "FUTU_PORT",
         "FUTU_TRD_ENV",
         "FUTU_MARKET",
+        "FUTU_MARKETS",
         "FUTU_REAL_TRADING_CONFIRM",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -18,6 +19,7 @@ def test_defaults(monkeypatch):
     assert cfg.host == "127.0.0.1"
     assert cfg.port == 11111
     assert cfg.trd_env == "SIMULATE"
+    assert cfg.markets == ("HK", "US")
     assert cfg.paper is True
     assert cfg.real_trading_confirmed is False
 
@@ -60,6 +62,7 @@ def test_tiger_defaults(monkeypatch):
         "TIGER_MAX_CONTRACTS",
         "TIGER_USE_PRESET_CONTRACTS",
         "TIGER_MARKET",
+        "TIGER_MARKETS",
         "TIGER_LIVE_TRADING_CONFIRM",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -70,8 +73,17 @@ def test_tiger_defaults(monkeypatch):
     assert cfg.language == "zh_CN"
     assert cfg.max_contracts == 100
     assert cfg.market == "US"
+    assert cfg.markets == ("US",)
     assert cfg.paper is True
     assert cfg.live_trading_confirmed is False
+
+
+def test_futu_config_supports_multiple_markets_from_env(monkeypatch):
+    monkeypatch.setenv("FUTU_MARKETS", "HK,US")
+
+    cfg = load_futu_config()
+
+    assert cfg.markets == ("HK", "US")
 
 
 def test_tiger_live_env_requires_explicit_confirmation(monkeypatch):
@@ -125,6 +137,7 @@ def test_tiger_config_can_load_from_settings_file(monkeypatch, tmp_path):
                 "private_key_path": "key.pem",
                 "environment": "sandbox",
                 "market": "HK",
+                "markets": ["HK", "US"],
             }
         },
         path,
@@ -139,3 +152,4 @@ def test_tiger_config_can_load_from_settings_file(monkeypatch, tmp_path):
     assert cfg.account == "acc"
     assert cfg.private_key_path == "key.pem"
     assert cfg.market == "HK"
+    assert cfg.markets == ("HK", "US")

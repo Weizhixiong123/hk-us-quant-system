@@ -164,6 +164,7 @@ class AppState:
                 turnover=6_850_000_000,
                 score=0.82,
                 tags=["15m 缩量", "5m 金叉"],
+                updated_at=now,
             ),
             WatchSymbol(
                 symbol="MSFT",
@@ -174,6 +175,7 @@ class AppState:
                 turnover=5_170_000_000,
                 score=0.77,
                 tags=["周线多头", "月线零轴上"],
+                updated_at=now,
             ),
             WatchSymbol(
                 symbol="0700.HK",
@@ -184,6 +186,7 @@ class AppState:
                 turnover=1_920_000_000,
                 score=0.86,
                 tags=["日线回踩", "候选持仓"],
+                updated_at=now,
             ),
             WatchSymbol(
                 symbol="3690.HK",
@@ -194,6 +197,7 @@ class AppState:
                 turnover=1_120_000_000,
                 score=0.64,
                 tags=["波动观察", "未触发"],
+                updated_at=now,
             ),
         ]
         self.signals = [
@@ -570,7 +574,7 @@ class AppState:
             )
             day_pnl = round(account.balance - initial, 2)
             return AccountSummary(
-                currency="DRY-RUN",
+                currency="干跑",
                 source="dry_run",
                 total_equity=round(account.balance, 2),
                 cash=round(account.available, 2),
@@ -599,7 +603,7 @@ class AppState:
         if bool(runtime.get("dry_run", True)):
             equity = round(float(runtime.get("default_equity", 1_000_000.0)), 2)
             return AccountSummary(
-                currency="DRY-RUN",
+                currency="干跑",
                 source="dry_run",
                 total_equity=equity,
                 cash=equity,
@@ -721,11 +725,10 @@ class AppState:
         return trades
 
     def _live_watchlist(self) -> list[WatchSymbol]:
-        events = list_live_events(kind="signal", db_path=self._current_db_path())
         names = {info.symbol: info.name for info in all_symbols()}
         rows: list[WatchSymbol] = []
         seen: set[str] = set()
-        for event in events:
+        for event in list_live_events(kind="signal", db_path=self._current_db_path()):
             symbol = event.symbol or ""
             if not symbol or symbol in seen:
                 continue
@@ -742,8 +745,29 @@ class AppState:
                     turnover=0.0,
                     score=0.85 if submitted else 0.6,
                     tags=list(payload.get("reasons", [])),
+                    updated_at=event.created_at,
                 )
             )
+        for event in list_live_events(kind="selection", db_path=self._current_db_path()):
+            payload = event.payload or {}
+            for raw_symbol in payload.get("symbols", []):
+                symbol = str(raw_symbol)
+                if not symbol or symbol in seen:
+                    continue
+                seen.add(symbol)
+                rows.append(
+                    WatchSymbol(
+                        symbol=symbol,
+                        name=names.get(symbol, symbol),
+                        market=_market_from_symbol(symbol),
+                        last_price=0.0,
+                        change_pct=0.0,
+                        turnover=0.0,
+                        score=0.72,
+                        tags=_selection_tags(event.strategy_id),
+                        updated_at=event.created_at,
+                    )
+                )
         return rows
 
     def _live_signals(self) -> list[Signal]:
@@ -792,6 +816,12 @@ def _market_from_symbol(symbol: str) -> str:
     if value.endswith(".HK") or value.startswith("HK.") or value.isdigit():
         return "HK"
     return "US"
+
+
+def _selection_tags(strategy_id: str) -> list[str]:
+    if strategy_id == "trend_portfolio":
+        return ["月末选股", "候选持仓"]
+    return ["盘前筛选", "等待 15m 收线确认"]
 
 
 def _side_from_direction(direction: str) -> str:

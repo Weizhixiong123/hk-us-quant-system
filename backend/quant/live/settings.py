@@ -21,6 +21,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "port": 11111,
         "trd_env": "SIMULATE",
         "market": "HK",
+        "markets": ["HK", "US"],
         "real_trading_confirmed": False,
     },
     "tiger": {
@@ -34,6 +35,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "max_contracts": 100,
         "use_preset_contracts": False,
         "market": "US",
+        "markets": ["US"],
         "live_trading_confirmed": False,
     },
     "safety": {
@@ -123,7 +125,8 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     futu["host"] = str(futu.get("host", "127.0.0.1"))
     futu["port"] = int(futu.get("port", 11111))
     futu["trd_env"] = str(futu.get("trd_env", "SIMULATE")).upper()
-    futu["market"] = str(futu.get("market", "HK")).upper()
+    futu["markets"] = _normalize_markets(futu.get("markets"), futu.get("market", "HK"))
+    futu["market"] = futu["markets"][0]
     futu["real_trading_confirmed"] = bool(futu.get("real_trading_confirmed", False))
 
     tiger = settings.setdefault("tiger", {})
@@ -136,7 +139,8 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     tiger["language"] = str(tiger.get("language", "zh_CN"))
     tiger["max_contracts"] = int(tiger.get("max_contracts", 100))
     tiger["use_preset_contracts"] = bool(tiger.get("use_preset_contracts", False))
-    tiger["market"] = str(tiger.get("market", "US")).upper()
+    tiger["markets"] = _normalize_markets(tiger.get("markets"), tiger.get("market", "US"))
+    tiger["market"] = tiger["markets"][0]
     tiger["live_trading_confirmed"] = bool(tiger.get("live_trading_confirmed", False))
 
     safety = settings.setdefault("safety", {})
@@ -144,6 +148,16 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     safety.pop("close_only", None)
     safety["operator_note"] = str(safety.get("operator_note", ""))
     return settings
+
+
+def _normalize_markets(value: Any, fallback: Any) -> list[str]:
+    raw_items = value if isinstance(value, list) else [fallback]
+    markets: list[str] = []
+    for item in raw_items:
+        market = str(item).upper()
+        if market in {"HK", "US"} and market not in markets:
+            markets.append(market)
+    return markets or ["HK"]
 
 
 def _validate(settings: Mapping[str, Any]) -> None:
@@ -158,11 +172,15 @@ def _validate(settings: Mapping[str, Any]) -> None:
     futu = settings["futu"]
     if futu["trd_env"] not in {"SIMULATE", "REAL"}:
         raise ValueError("futu.trd_env must be SIMULATE or REAL")
+    if not set(futu["markets"]).issubset({"HK", "US"}):
+        raise ValueError("futu.markets must contain HK or US")
     if futu["trd_env"] == "REAL" and not futu["real_trading_confirmed"]:
         raise ValueError("futu REAL mode requires real trading confirmation")
 
     tiger = settings["tiger"]
     if tiger["environment"] not in {"sandbox", "live"}:
         raise ValueError("tiger.environment must be sandbox or live")
+    if not set(tiger["markets"]).issubset({"HK", "US"}):
+        raise ValueError("tiger.markets must contain HK or US")
     if tiger["environment"] == "live" and not tiger["live_trading_confirmed"]:
         raise ValueError("tiger live mode requires live trading confirmation")

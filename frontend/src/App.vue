@@ -28,7 +28,7 @@ import { useDashboard } from "./composables/useDashboard";
 import type { Market, RiskRuleStatus, Signal, Trade, TradeLog } from "./api/types";
 
 type ViewName = "dashboard" | "trades" | "settings";
-type QueryStatus = "triggered" | "selected" | "watching" | "pending";
+type QueryStatus = "triggered" | "selected" | "watching" | "pending" | "closed";
 
 interface NavItem {
   label: string;
@@ -117,6 +117,15 @@ const navItems: NavItem[] = [
 
 const appYear = new Date().getFullYear();
 const appVersion = "1.0.0";
+const weekdayIndexes: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6
+};
 
 const streamLabel = computed(() => {
   switch (streamState.value) {
@@ -133,7 +142,7 @@ const accountSourceLabel = computed(() => {
   if (!account.value) {
     return "--";
   }
-  return account.value.source === "dry_run" ? "Dry-run 资金" : "券商账户";
+  return account.value.source === "dry_run" ? "干跑资金" : "券商账户";
 });
 
 const buyingPowerLabel = computed(() => {
@@ -148,14 +157,14 @@ const currentModeLabel = computed(() => {
   if (!account.value) {
     return "--";
   }
-  return account.value.source === "dry_run" ? "Dry-run" : "券商账户";
+  return account.value.source === "dry_run" ? "干跑" : "券商账户";
 });
 
 const queriedStocks = computed<QueryRow[]>(() =>
   watchlist.value.map((item, index) => {
     const reason = item.tags.length > 0 ? item.tags.join(" / ") : "等待信号";
     const strategyTwo = isTrendCandidate(reason);
-    const status = resolveQueryStatus(reason);
+    const status = resolveQueryStatus(reason, item.market);
 
     return {
       symbol: item.symbol,
@@ -167,7 +176,7 @@ const queriedStocks = computed<QueryRow[]>(() =>
       statusLabel: queryStatusLabel(status),
       reason,
       score: Math.round(item.score * 100),
-      updatedAt: time(dashboard.value?.server_time),
+      updatedAt: time(item.updated_at),
       starred: index === 2
     };
   })
@@ -258,7 +267,10 @@ function isTrendCandidate(reason: string): boolean {
   return ["周线", "月线", "日线", "候选持仓", "中长线"].some((keyword) => reason.includes(keyword));
 }
 
-function resolveQueryStatus(reason: string): QueryStatus {
+function resolveQueryStatus(reason: string, market: Market): QueryStatus {
+  if (!isMarketOpenNow(market)) {
+    return "closed";
+  }
   if (reason.includes("金叉") || reason.includes("已触发")) {
     return "triggered";
   }
@@ -281,7 +293,43 @@ function queryStatusLabel(status: QueryStatus): string {
       return "观察中";
     case "pending":
       return "未触发";
+    case "closed":
+      return "已闭市";
   }
+}
+
+function isMarketOpenNow(market: Market): boolean {
+  const serverTime = dashboard.value?.server_time;
+  const value = serverTime ? new Date(serverTime) : new Date();
+  const local = marketLocalParts(value, market);
+
+  if (local.weekday === 0 || local.weekday === 6) {
+    return false;
+  }
+
+  const minutes = local.hour * 60 + local.minute;
+  if (market === "HK") {
+    return (minutes >= 570 && minutes < 720) || (minutes >= 780 && minutes < 960);
+  }
+  return minutes >= 570 && minutes < 960;
+}
+
+function marketLocalParts(value: Date, market: Market): { weekday: number; hour: number; minute: number } {
+  const timezone = market === "US" ? "America/New_York" : "Asia/Hong_Kong";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(value);
+  const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return {
+    weekday: weekdayIndexes[partMap.weekday] ?? 0,
+    hour: Number(partMap.hour ?? 0),
+    minute: Number(partMap.minute ?? 0)
+  };
 }
 
 function money(value: number): string {
@@ -360,7 +408,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   intraday_macd: "策略一",
   trend_portfolio: "策略二",
   broker: "券商",
-  dry_run: "模拟",
+  dry_run: "干跑",
   backtest: "回测",
   system: "系统"
 };
@@ -638,7 +686,7 @@ function timeOnly(value?: string): string {
                   查看全部 {{ queriedStocks.length }} 只股票
                   <ChevronRight :size="16" />
                 </button>
-                <span>数据每 5 分钟自动更新</span>
+                <span>闭市时保留最近一次筛选结果</span>
               </footer>
             </article>
 

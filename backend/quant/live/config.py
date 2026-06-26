@@ -17,6 +17,7 @@ class FutuGatewayConfig:
     port: int
     trd_env: str
     market: str
+    markets: tuple[str, ...]
     paper: bool
     real_trading_confirmed: bool
 
@@ -33,6 +34,7 @@ class TigerGatewayConfig:
     max_contracts: int
     use_preset_contracts: bool
     market: str
+    markets: tuple[str, ...]
     paper: bool
     live_trading_confirmed: bool
 
@@ -59,6 +61,7 @@ def load_futu_config() -> FutuGatewayConfig:
         port=int(os.getenv("FUTU_PORT", str(settings.get("port", "11111")))),
         trd_env=trd_env,
         market=os.getenv("FUTU_MARKET", str(settings.get("market", "HK"))).upper(),
+        markets=_markets_from_env("FUTU_MARKETS", settings.get("markets", ["HK", "US"])),
         paper=trd_env == "SIMULATE",
         real_trading_confirmed=real_confirmed,
     )
@@ -111,6 +114,7 @@ def load_tiger_config() -> TigerGatewayConfig:
             bool(settings.get("use_preset_contracts", False)),
         ),
         market=os.getenv("TIGER_MARKET", str(settings.get("market", "US"))).upper(),
+        markets=_markets_from_env("TIGER_MARKETS", settings.get("markets", ["US"])),
         paper=environment == "sandbox",
         live_trading_confirmed=live_confirmed,
     )
@@ -128,3 +132,17 @@ def _confirmation_from_env(name: str, expected: str, default: bool) -> bool:
     if value is None:
         return default
     return value == expected
+
+
+def _markets_from_env(name: str, default: object) -> tuple[str, ...]:
+    value = os.getenv(name)
+    raw_items = value.split(",") if value else default
+    if not isinstance(raw_items, list | tuple):
+        raw_items = [raw_items]
+
+    markets: list[str] = []
+    for item in raw_items:
+        market = str(item).strip().upper()
+        if market in {"HK", "US"} and market not in markets:
+            markets.append(market)
+    return tuple(markets or ["HK"])

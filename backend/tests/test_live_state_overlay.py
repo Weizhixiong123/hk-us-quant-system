@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.services.state import AppState
 from quant.live.state import LiveGatewayState
 from quant.live.translate import (
@@ -139,6 +141,32 @@ def test_dashboard_watchlist_from_live_signals(tmp_path):
     aapl = next(w for w in watchlist if w.symbol == "AAPL")
     assert aapl.market == "US"
     assert aapl.tags == ["15m 缩量", "5m 金叉"]
+
+
+def test_dashboard_watchlist_includes_live_selection_events(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    created_at = datetime(2026, 6, 25, 13, 0, tzinfo=timezone.utc)
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=created_at,
+        payload={"symbols": ["AAPL", "MSFT"], "candidate_count": 2},
+        db_path=db,
+    )
+
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+    state = AppState(live_state, db_path=db)
+
+    watchlist = state.dashboard().watchlist
+
+    assert [item.symbol for item in watchlist] == ["AAPL", "MSFT"]
+    assert watchlist[0].tags == ["盘前筛选", "等待 15m 收线确认"]
+    assert watchlist[0].updated_at == created_at
 
 
 def test_dashboard_signals_from_live_events(tmp_path):

@@ -63,6 +63,7 @@ export interface WatchSymbol {
   turnover: number;
   score: number;
   tags: string[];
+  updated_at: string;
 }
 
 export interface Signal {
@@ -175,6 +176,7 @@ export interface FutuLiveSettings {
   port: number;
   trd_env: FutuTradeEnv;
   market: Market;
+  markets: Market[];
   real_trading_confirmed: boolean;
 }
 
@@ -189,6 +191,7 @@ export interface TigerLiveSettings {
   max_contracts: number;
   use_preset_contracts: boolean;
   market: Market;
+  markets: Market[];
   live_trading_confirmed: boolean;
 }
 

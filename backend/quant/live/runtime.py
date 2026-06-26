@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
-from quant.live.clock import Market
+from quant.live.clock import Market, is_trading_day, market_time, premarket_scan_time
 from quant.live.data_provider import DefaultLiveDataProvider, LiveDataProvider
 from quant.live.params import LiveParams
 from quant.live.executor import execute_exit_order, execute_intraday_entry, execute_portfolio_entry
@@ -94,6 +94,7 @@ class LiveRuntime:
         self._running = False
         self._seeded_day = None
         self._seeded_symbols: set[str] = set()
+        self._premarket_catchups: set[tuple[Market, date]] = set()
         self._shortable_symbols = {item.symbol.upper() for item in all_symbols() if item.shortable}
 
     async def start(self) -> None:
@@ -135,6 +136,7 @@ class LiveRuntime:
         self.market_data.ingest_ticks(snapshot.get("ticks", []))
         self._observe_account(snapshot, at)
         self.runtime_state.persist_gateway_snapshot(snapshot, at, self.db_path)
+        self._catch_up_premarket_scan(at)
         for action in self.scheduler.due_actions(at):
             self.handle_action(action, at)
 
@@ -172,6 +174,22 @@ class LiveRuntime:
             payload={"symbols": symbols, "candidate_count": len(candidates)},
             db_path=self.db_path,
         )
+
+    def _catch_up_premarket_scan(self, at: datetime) -> None:
+        if self.runtime_state.intraday_watchlist:
+            return
+        for market in self.scheduler.markets:
+            local = market_time(at, market)
+            day = local.date()
+            key = (market, day)
+            if key in self._premarket_catchups or not is_trading_day(day, market):
+                continue
+            scan_at = premarket_scan_time(day, market)
+            catchup_until = scan_at + timedelta(minutes=60)
+            if scan_at < local < catchup_until:
+                self._premarket_catchups.add(key)
+                self._run_intraday_premarket_scan(at)
+                return
 
     def _run_intraday_entries(self, market: Market, at: datetime) -> None:
         snapshot = self.live_state.snapshot()
@@ -461,7 +479,7 @@ class DryRunGateway:
         self._last_prices: dict[str, float] = {}
 
     def connect(self) -> None:
-        self.state.set_connected(True, "DRY RUN 网关已连接，仅记录不触达券商")
+        self.state.set_connected(True, "干跑网关已连接，仅记录不触达券商")
         self._publish_account()
 
     def subscribe(self, symbols: list[str], exchange: str | None = None) -> None:
@@ -511,7 +529,7 @@ class DryRunGateway:
         return order_id
 
     def close(self) -> None:
-        self.state.set_connected(False, "DRY RUN 网关已关闭")
+        self.state.set_connected(False, "干跑网关已关闭")
 
     def _update_position(self, symbol: str, direction: str, offset: str, price: float, volume: float) -> None:
         position_direction = direction if not _is_close(offset) else ("多" if "空" in direction else "空")
@@ -566,7 +584,9 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
         ),
     )
     market_data = BarAggregator()
-    data_provider = DefaultLiveDataProvider(market_data)
+    runtime_markets = _runtime_markets(all_settings, config.broker)
+    symbols = [item for item in all_symbols() if item.market in runtime_markets]
+    data_provider = DefaultLiveDataProvider(market_data, symbols=symbols)
     gateway: RuntimeGateway
     if config.dry_run:
         gateway = DryRunGateway(live_state, initial_cash=config.default_equity)
@@ -581,7 +601,7 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
     return LiveRuntime(
         live_state=live_state,
         gateway=gateway,
-        scheduler=LiveScheduler(),
+        scheduler=LiveScheduler(markets=runtime_markets),
         data_provider=data_provider,
         market_data=market_data,
         config=config,
@@ -602,6 +622,20 @@ def _broker_from_env(default: str = "futu") -> str:
     if broker not in {"futu", "tiger"}:
         raise ValueError("LIVE_RUNTIME_BROKER must be futu or tiger")
     return broker
+
+
+def _runtime_markets(settings: dict[str, Any], broker: str) -> tuple[Market, ...]:
+    env_value = os.getenv("LIVE_RUNTIME_MARKETS")
+    raw_items: object = env_value.split(",") if env_value else settings.get(broker, {}).get("markets", ["HK", "US"])
+    if not isinstance(raw_items, list | tuple):
+        raw_items = [raw_items]
+
+    markets: list[Market] = []
+    for item in raw_items:
+        market = str(item).strip().upper()
+        if market in {"HK", "US"} and market not in markets:
+            markets.append(market)  # type: ignore[arg-type]
+    return tuple(markets or ["HK"])  # type: ignore[return-value]
 
 
 def _account_equity(snapshot: dict[str, Any], default: float) -> float:

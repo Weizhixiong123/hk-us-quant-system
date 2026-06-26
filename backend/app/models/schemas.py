@@ -75,6 +75,7 @@ class WatchSymbol(BaseModel):
     turnover: float
     score: float
     tags: list[str]
+    updated_at: datetime
 
 
 class Signal(BaseModel):
@@ -200,6 +201,7 @@ class FutuLiveSettings(BaseModel):
     port: int = Field(default=11111, gt=0)
     trd_env: FutuTradeEnv = "SIMULATE"
     market: Market = "HK"
+    markets: list[Market] = Field(default_factory=lambda: ["HK", "US"])
     real_trading_confirmed: bool = False
 
 
@@ -214,6 +216,7 @@ class TigerLiveSettings(BaseModel):
     max_contracts: int = Field(default=100, ge=1)
     use_preset_contracts: bool = False
     market: Market = "US"
+    markets: list[Market] = Field(default_factory=lambda: ["US"])
     live_trading_confirmed: bool = False
     clear_private_key: bool = False
 
@@ -229,6 +232,7 @@ class PublicTigerLiveSettings(BaseModel):
     max_contracts: int = 100
     use_preset_contracts: bool = False
     market: Market = "US"
+    markets: list[Market] = Field(default_factory=lambda: ["US"])
     live_trading_confirmed: bool = False
 
 

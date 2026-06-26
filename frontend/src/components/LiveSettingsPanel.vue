@@ -15,6 +15,7 @@ import { fetchLiveSettings, reloadRuntime, saveLiveSettings } from "../api/clien
 import type {
   FutuTradeEnv,
   LiveBroker,
+  Market,
   LiveSettingsSnapshot,
   LiveSettingsUpdate,
   TigerTradeEnv
@@ -46,6 +47,7 @@ const form = reactive<LiveSettingsSnapshot>({
     port: 11111,
     trd_env: "SIMULATE",
     market: "HK",
+    markets: ["HK", "US"],
     real_trading_confirmed: false
   },
   tiger: {
@@ -59,6 +61,7 @@ const form = reactive<LiveSettingsSnapshot>({
     max_contracts: 100,
     use_preset_contracts: false,
     market: "US",
+    markets: ["US"],
     live_trading_confirmed: false
   },
   safety: {
@@ -79,6 +82,34 @@ const runtimeMode = computed<RuntimeMode>(() => {
 });
 
 const activeBrokerLabel = computed(() => (form.runtime.broker === "futu" ? "富途" : "老虎"));
+const runtimeModeLabel = computed(() => {
+  switch (runtimeMode.value) {
+    case "dry_run":
+      return "干跑";
+    case "sandbox":
+      return "模拟盘";
+    case "live":
+      return "实盘";
+  }
+});
+const brokerEnvironmentLabel = computed(() => {
+  if (runtimeMode.value === "dry_run") {
+    return "不连接券商";
+  }
+  return runtimeMode.value === "live" ? "实盘" : "模拟盘";
+});
+const brokerEnvironmentDetail = computed(() => {
+  if (form.runtime.broker === "futu") {
+    if (runtimeMode.value === "dry_run") {
+      return "富途环境保持 SIMULATE，运行时不触达券商";
+    }
+    return runtimeMode.value === "live" ? "富途底层环境：REAL" : "富途底层环境：SIMULATE";
+  }
+  if (runtimeMode.value === "dry_run") {
+    return "老虎环境保持 sandbox，运行时不触达券商";
+  }
+  return runtimeMode.value === "live" ? "老虎底层环境：live" : "老虎底层环境：sandbox";
+});
 const liveAlreadyConfirmed = computed(() =>
   form.runtime.broker === "futu"
     ? form.futu.real_trading_confirmed
@@ -110,7 +141,9 @@ async function loadSettings(): Promise<void> {
 }
 
 function setBroker(value: LiveBroker): void {
+  const currentMode = runtimeMode.value;
   form.runtime.broker = value;
+  setRuntimeMode(currentMode);
 }
 
 function setRuntimeMode(value: RuntimeMode): void {
@@ -127,6 +160,7 @@ function buildPayload(): LiveSettingsUpdate {
     runtime: { ...form.runtime },
     futu: {
       ...form.futu,
+      market: form.futu.markets[0] ?? "HK",
       real_trading_confirmed:
         form.futu.trd_env === "REAL" ? liveAckReady.value : false
     },
@@ -139,7 +173,8 @@ function buildPayload(): LiveSettingsUpdate {
       language: form.tiger.language,
       max_contracts: Number(form.tiger.max_contracts),
       use_preset_contracts: form.tiger.use_preset_contracts,
-      market: form.tiger.market,
+      market: form.tiger.markets[0] ?? "US",
+      markets: form.tiger.markets,
       live_trading_confirmed:
         form.tiger.environment === "live" ? liveAckReady.value : false
     },
@@ -161,6 +196,17 @@ function buildPayload(): LiveSettingsUpdate {
     };
   }
   return payload;
+}
+
+function toggleMarket(markets: Market[], market: Market): void {
+  const index = markets.indexOf(market);
+  if (index >= 0) {
+    if (markets.length > 1) {
+      markets.splice(index, 1);
+    }
+    return;
+  }
+  markets.push(market);
 }
 
 async function saveSettings(): Promise<void> {
@@ -247,7 +293,7 @@ onMounted(loadSettings);
         </div>
         <div>
           <span>当前账户</span>
-          <strong>{{ activeBrokerLabel }} · {{ runtimeMode }}</strong>
+          <strong>{{ activeBrokerLabel }} · {{ runtimeModeLabel }}</strong>
           <small class="status-pill" :class="{ active: form.runtime.enabled }">
             <CheckCircle2 :size="13" />
             {{ form.runtime.enabled ? "运行时已启用" : "运行时未启用" }}
@@ -332,7 +378,7 @@ onMounted(loadSettings);
               :class="{ active: runtimeMode === 'dry_run' }"
               @click="setRuntimeMode('dry_run')"
             >
-              Dry-run
+              干跑
             </button>
             <button
               type="button"
@@ -358,7 +404,7 @@ onMounted(loadSettings);
             <input v-model.number="form.runtime.poll_interval_seconds" type="number" min="0.5" step="0.5" />
           </label>
           <label v-if="usesDefaultEquity">
-            <span>Dry-run 账户权益</span>
+            <span>干跑账户权益</span>
             <input v-model.number="form.runtime.default_equity" type="number" min="1" step="1000" />
           </label>
         </div>
@@ -389,17 +435,29 @@ onMounted(loadSettings);
           </label>
           <label>
             <span>交易环境</span>
-            <select v-model="form.futu.trd_env">
-              <option value="SIMULATE">SIMULATE</option>
-              <option value="REAL">REAL</option>
-            </select>
+            <div class="locked-env" :class="{ danger: runtimeMode === 'live' }">
+              <strong>{{ brokerEnvironmentLabel }}</strong>
+              <small>{{ brokerEnvironmentDetail }}</small>
+            </div>
           </label>
           <label>
-            <span>默认市场</span>
-            <select v-model="form.futu.market">
-              <option value="HK">HK</option>
-              <option value="US">US</option>
-            </select>
+            <span>交易市场</span>
+            <div class="market-checks">
+              <button
+                type="button"
+                :class="{ active: form.futu.markets.includes('HK') }"
+                @click="toggleMarket(form.futu.markets, 'HK')"
+              >
+                港股
+              </button>
+              <button
+                type="button"
+                :class="{ active: form.futu.markets.includes('US') }"
+                @click="toggleMarket(form.futu.markets, 'US')"
+              >
+                美股
+              </button>
+            </div>
           </label>
         </div>
 
@@ -455,17 +513,29 @@ onMounted(loadSettings);
           </label>
           <label>
             <span>交易环境</span>
-            <select v-model="form.tiger.environment">
-              <option value="sandbox">sandbox</option>
-              <option value="live">live</option>
-            </select>
+            <div class="locked-env" :class="{ danger: runtimeMode === 'live' }">
+              <strong>{{ brokerEnvironmentLabel }}</strong>
+              <small>{{ brokerEnvironmentDetail }}</small>
+            </div>
           </label>
           <label>
-            <span>默认市场</span>
-            <select v-model="form.tiger.market">
-              <option value="US">US</option>
-              <option value="HK">HK</option>
-            </select>
+            <span>交易市场</span>
+            <div class="market-checks">
+              <button
+                type="button"
+                :class="{ active: form.tiger.markets.includes('US') }"
+                @click="toggleMarket(form.tiger.markets, 'US')"
+              >
+                美股
+              </button>
+              <button
+                type="button"
+                :class="{ active: form.tiger.markets.includes('HK') }"
+                @click="toggleMarket(form.tiger.markets, 'HK')"
+              >
+                港股
+              </button>
+            </div>
           </label>
           <label>
             <span>语言</span>
