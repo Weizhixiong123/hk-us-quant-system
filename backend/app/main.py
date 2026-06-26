@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import settings
@@ -44,15 +47,35 @@ def create_app() -> FastAPI:
     )
     app.include_router(router, prefix="/api")
 
-    @app.get("/")
-    def root() -> dict[str, str]:
-        return {
-            "name": settings.app_name,
-            "docs": "/docs",
-            "dashboard": "/api/dashboard",
-        }
+    frontend_dist = _frontend_dist_dir()
+    if frontend_dist is not None:
+        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+    else:
+        @app.get("/")
+        def root() -> dict[str, str]:
+            return {
+                "name": settings.app_name,
+                "docs": "/docs",
+                "dashboard": "/api/dashboard",
+            }
 
     return app
+
+
+def _frontend_dist_dir() -> Path | None:
+    env_dir = os.getenv("FRONTEND_DIST_DIR")
+    repo_root = Path(__file__).resolve().parents[2]
+    backend_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        Path(env_dir) if env_dir else None,
+        repo_root / "frontend" / "dist",
+        backend_root / "static",
+    ]
+
+    for candidate in candidates:
+        if candidate and (candidate / "index.html").exists():
+            return candidate
+    return None
 
 
 app = create_app()

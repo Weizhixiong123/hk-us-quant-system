@@ -20,3 +20,6 @@ dist/
 *.sqlite3
 *.db
 backend/data/*.json
+
+# Local release packages
+release/

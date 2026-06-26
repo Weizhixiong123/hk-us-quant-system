@@ -38,7 +38,24 @@ npm run dev
 4. 设置 `LIVE_RUNTIME_BROKER=tiger`、`LIVE_RUNTIME_DRY_RUN=0` 后启动后端。
 5. sandbox 使用 `TIGER_ENVIRONMENT=sandbox`；live 还需要 `TIGER_LIVE_TRADING_CONFIRM=I_UNDERSTAND_TIGER_REAL_MONEY_RISK`。
 
-## 3. 生产部署建议
+## 3. Windows 本地单机部署包
+
+在开发机上生成客户可解压运行的本地包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\windows\build-package.ps1
+```
+
+生成结果：
+
+```text
+release\hk-us-quant-client\
+release\hk-us-quant-client.zip
+```
+
+客户解压后双击 `start.bat`，浏览器访问 `http://127.0.0.1:8000`。如果客户机器上的内置运行时不可用，可双击 `repair-runtime.bat` 重建依赖。
+
+## 4. 生产部署建议
 
 - 后端：`uvicorn app.main:app --host 0.0.0.0 --port 8000`，外层用 Nginx 或 Caddy 反代。
 - 前端：`npm run build` 后部署 `frontend/dist` 静态文件。
@@ -46,7 +63,7 @@ npm run dev
 - 数据：订单、成交、日志、策略参数和回测结果需要接 SQLite/MySQL/PostgreSQL 持久化。
 - 进程：FutuOpenD、后端 API、策略引擎、数据记录器应由 supervisor/systemd/PM2 等守护。
 
-## 4. 上线检查
+## 5. 上线检查
 
 - 确认策略一美股账户满足 PDT 要求：保证金账户且净值不低于 25,000 美元。
 - 确认空头交易只对券商返回可做空/可借券标的开放。
