@@ -52,9 +52,10 @@ function New-ZipPackage {
         [string]$DestinationZip
     )
 
-    $tar = Get-Command tar -ErrorAction SilentlyContinue
-    if ($tar) {
-        & tar -a -cf $DestinationZip -C $SourceDirectory .
+    # 只用 Windows 自带的 tar(全路径),避免 git bash 的 MSYS tar 把 "E:" 当远程主机
+    $windowsTar = Join-Path $env:SystemRoot "System32\tar.exe"
+    if (Test-Path -LiteralPath $windowsTar) {
+        & $windowsTar -a -cf $DestinationZip -C $SourceDirectory .
         if ($LASTEXITCODE -ne 0) {
             throw "tar failed with exit code $LASTEXITCODE"
         }
