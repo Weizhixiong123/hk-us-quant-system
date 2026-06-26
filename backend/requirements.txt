@@ -1,3 +1,4 @@
+# 核心运行依赖(干跑/模拟盘/实盘 共用的纯 Python 部分,均可从 PyPI 安装)
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
@@ -6,5 +7,6 @@ numpy>=2.0.0
 pandas>=2.2.0
 yfinance>=0.2.40
 akshare>=1.14.0
-vnpy>=3.9.0
-vnpy_futu>=1.0.0
+
+# 券商网关(vnpy / vnpy_futu / vnpy_tiger)仅模拟盘/实盘需要,见 requirements-broker.txt。
+# 它们不在 PyPI,放在这里会导致干跑部署的 pip install 整体失败。
