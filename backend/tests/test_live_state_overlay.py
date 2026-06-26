@@ -191,3 +191,17 @@ def test_dashboard_signals_from_live_events(tmp_path):
     assert aapl.strategy_id == "intraday_macd"
     assert aapl.reason == "5m 金叉"
     assert aapl.status == "executed"
+
+
+def test_broker_account_day_pnl_from_gateway():
+    live_state = LiveGatewayState()
+    # 券商账户回报:当日盈亏 +2000(权益 102000,当日基线 100000)
+    live_state.update_account(
+        GatewayAccount("ACC1", balance=102_000, available=50_000, frozen=52_000, day_pnl=2_000)
+    )
+
+    account = AppState(live_state).dashboard().account
+
+    assert account.source == "broker"
+    assert account.day_pnl == 2_000  # 不再写死 0,来自券商账户
+    assert account.day_pnl_pct == 2.0  # 2000 / (102000-2000) * 100

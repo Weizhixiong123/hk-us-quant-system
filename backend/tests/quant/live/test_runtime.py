@@ -477,3 +477,21 @@ def test_dry_run_gateway_simulates_cash_account():
     account = live_state.snapshot()["account"]
     assert account.available == 1_002_000.0
     assert account.balance == 1_002_000.0
+
+
+def test_observe_account_writes_day_pnl(tmp_path):
+    from quant.live.translate import GatewayAccount
+
+    runtime, _gateway = _runtime(tmp_path)
+    live_state = runtime.live_state
+    at = datetime(2026, 6, 26, 10, 0, tzinfo=timezone.utc)
+
+    # 当日首次回报 → 记基线 100000,当日盈亏 0
+    live_state.update_account(GatewayAccount("ACC1", 100_000, 50_000, 50_000))
+    runtime._observe_account(live_state.snapshot(), at)
+    assert live_state.snapshot()["account"].day_pnl == 0
+
+    # 权益涨到 103000 → 当日盈亏 +3000(券商账户没这字段,由 runtime 按基线算)
+    live_state.update_account(GatewayAccount("ACC1", 103_000, 50_000, 53_000))
+    runtime._observe_account(live_state.snapshot(), at)
+    assert live_state.snapshot()["account"].day_pnl == 3_000

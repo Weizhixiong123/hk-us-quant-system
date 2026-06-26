@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 from uuid import uuid4
@@ -144,8 +144,11 @@ class LiveRuntime:
         account = snapshot.get("account")
         if account is None:
             return
-        self.runtime_state.observe_account_equity(float(account.balance), at.date())
-        self.runtime_state.trip_halt_if_breached(float(account.balance), self.params.intraday.max_daily_loss_pct)
+        balance = float(account.balance)
+        self.runtime_state.observe_account_equity(balance, at.date())
+        self.runtime_state.trip_halt_if_breached(balance, self.params.intraday.max_daily_loss_pct)
+        baseline = self.runtime_state.day_start_equity or balance
+        self.live_state.update_account(replace(account, day_pnl=round(balance - baseline, 2)))
 
     def handle_action(self, action: SchedulerAction, at: datetime) -> None:
         if action.hook == "intraday_premarket_scan":

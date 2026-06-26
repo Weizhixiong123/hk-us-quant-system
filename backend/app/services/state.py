@@ -583,14 +583,16 @@ class AppState:
                 day_pnl_pct=round(day_pnl / initial * 100, 2) if initial else 0.0,
                 max_daily_loss_pct=self.account.max_daily_loss_pct,
             )
+        day_pnl = round(float(account.day_pnl), 2)
+        baseline = float(account.balance) - float(account.day_pnl)
         return AccountSummary(
             currency="HKD/USD",
             source="broker",
             total_equity=round(account.balance, 2),
             cash=round(account.available, 2),
             buying_power=round(account.available, 2),
-            day_pnl=0.0,
-            day_pnl_pct=0.0,
+            day_pnl=day_pnl,
+            day_pnl_pct=round(day_pnl / baseline * 100, 2) if baseline else 0.0,
             max_daily_loss_pct=self.account.max_daily_loss_pct,
         )
 

@@ -19,6 +19,7 @@ class GatewayAccount:
     balance: float
     available: float
     frozen: float
+    day_pnl: float = 0.0
 
 
 @dataclass(frozen=True)
