@@ -1,5 +1,6 @@
 from quant.live.gateway import (
     _clean_symbol,
+    _futu_setting_from_config,
     _resolve_exchange,
     _tiger_setting_from_config,
 )
@@ -50,6 +51,7 @@ def test_tiger_setting_maps_config_keys():
         max_contracts=50,
         use_preset_contracts=True,
         market="US",
+        markets=("US",),
         paper=True,
         live_trading_confirmed=False,
     )
@@ -66,6 +68,30 @@ def test_tiger_setting_maps_config_keys():
         "language": "zh_CN",
         "max_contracts": "50",
         "use_preset_contracts": "true",
+    }
+
+
+def test_futu_setting_maps_vnpy_futu_chinese_keys():
+    from quant.live.config import FutuGatewayConfig
+
+    config = FutuGatewayConfig(
+        host="127.0.0.1",
+        port=11111,
+        trd_env="SIMULATE",
+        market="HK",
+        markets=("HK", "US"),
+        paper=True,
+        real_trading_confirmed=False,
+    )
+
+    setting = _futu_setting_from_config(config)
+
+    assert setting == {
+        "密码": "",
+        "地址": "127.0.0.1",
+        "端口": 11111,
+        "市场": "HK",
+        "环境": "SIMULATE",
     }
 
 
@@ -130,7 +156,15 @@ def test_query_history_minute_requires_connection():
     from quant.live.gateway import FutuLiveGateway
     from quant.live.state import LiveGatewayState
 
-    config = FutuGatewayConfig("127.0.0.1", 11111, "SIMULATE", "HK", True, False)
+    config = FutuGatewayConfig(
+        "127.0.0.1",
+        11111,
+        "SIMULATE",
+        "HK",
+        ("HK",),
+        True,
+        False,
+    )
     gateway = FutuLiveGateway(config, LiveGatewayState())
     with pytest.raises(RuntimeError):
         gateway.query_history_minute("AAPL")
@@ -154,6 +188,7 @@ def test_tiger_query_history_minute_requires_connection():
         100,
         False,
         "US",
+        ("US",),
         True,
         False,
     )
