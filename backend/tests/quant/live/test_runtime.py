@@ -479,6 +479,32 @@ def test_dry_run_gateway_simulates_cash_account():
     assert account.balance == 1_002_000.0
 
 
+def test_run_once_runs_off_event_loop_thread(tmp_path):
+    """run_once 是同步阻塞函数,必须在工作线程跑,否则会卡住整个 asyncio event loop。"""
+    import asyncio
+    import threading
+
+    runtime, _gateway = _runtime(tmp_path)
+    main_thread = threading.get_ident()
+    seen: dict = {}
+
+    def record(at):
+        seen["thread"] = threading.get_ident()
+        runtime._running = False  # 跑一次即停循环
+
+    runtime.run_once = record
+
+    async def scenario():
+        await runtime.start()
+        await asyncio.sleep(0.1)
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+    assert "thread" in seen
+    assert seen["thread"] != main_thread  # 在工作线程执行,没有阻塞 event loop
+
+
 def test_observe_account_writes_day_pnl(tmp_path):
     from quant.live.translate import GatewayAccount
 

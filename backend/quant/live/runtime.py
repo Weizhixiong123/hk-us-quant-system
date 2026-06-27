@@ -122,7 +122,9 @@ class LiveRuntime:
     async def _loop(self) -> None:
         while self._running:
             try:
-                self.run_once(datetime.now(timezone.utc))
+                # run_once 是同步阻塞(含 data_provider 网络拉取/磁盘 IO),放线程池执行,
+                # 避免阻塞 asyncio event loop 导致所有 HTTP 请求 pending。
+                await asyncio.to_thread(self.run_once, datetime.now(timezone.utc))
             except Exception as exc:
                 self._record_log("runtime", f"运行时循环异常：{exc}")
             await asyncio.sleep(self.config.poll_interval_seconds)
