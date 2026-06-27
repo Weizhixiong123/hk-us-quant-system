@@ -53,12 +53,7 @@ class FutuLiveGateway:
         self._event_engine.register(EVENT_TRADE, self._on_trade)
         self._event_engine.register(EVENT_TICK, self._on_tick)
 
-        setting = {
-            "市场": self.config.market,
-            "host": self.config.host,
-            "port": self.config.port,
-            "trd_env": self.config.trd_env,
-        }
+        setting = _futu_setting_from_config(self.config)
         try:
             self._main_engine.connect(setting, _FUTU_GATEWAY_NAME)
         except Exception:
@@ -360,6 +355,16 @@ def _tiger_setting_from_config(config: TigerGatewayConfig) -> dict[str, str]:
         "language": config.language,
         "max_contracts": str(config.max_contracts),
         "use_preset_contracts": "true" if config.use_preset_contracts else "false",
+    }
+
+
+def _futu_setting_from_config(config: FutuGatewayConfig) -> dict[str, object]:
+    return {
+        "密码": "",
+        "地址": config.host,
+        "端口": config.port,
+        "市场": config.market,
+        "环境": config.trd_env,
     }
 
 

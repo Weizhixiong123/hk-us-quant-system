@@ -59,8 +59,15 @@ def test_update_strategy_params_syncs_live_params():
 
     params = LiveParams()
     state = AppState(LiveGatewayState(), params)
-    state.update_strategy_params("intraday_macd", {"stop_loss_pct": 2.5})
+    state.update_strategy_params(
+        "intraday_macd",
+        {"stop_loss_pct": 2.5, "max_daily_loss_pct": 4.0, "max_positions": 5},
+    )
     assert params.intraday.stop_loss_pct == 2.5
+    assert state.dashboard().account.max_daily_loss_pct == 4.0
+    risk = {item.code: item for item in state.risk_status()}
+    assert risk["daily_loss"].detail.endswith("阈值 -4.00%")
+    assert risk["intraday_position_count"].detail.endswith("/5")
 
 
 def test_dashboard_account_reflects_dry_run_simulated_account():

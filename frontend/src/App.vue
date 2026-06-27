@@ -23,11 +23,13 @@ import {
   WalletCards
 } from "lucide-vue-next";
 import LiveSettingsPanel from "./components/LiveSettingsPanel.vue";
+import PositionManagement from "./components/PositionManagement.vue";
+import StrategyCard from "./components/StrategyCard.vue";
 import { fetchTradeHistory } from "./api/client";
 import { useDashboard } from "./composables/useDashboard";
 import type { Market, RiskRuleStatus, Signal, Trade, TradeLog } from "./api/types";
 
-type ViewName = "dashboard" | "trades" | "settings";
+type ViewName = "dashboard" | "strategies" | "positions" | "trades" | "settings";
 type QueryStatus = "triggered" | "selected" | "watching" | "pending" | "closed";
 
 interface NavItem {
@@ -78,8 +80,12 @@ const {
   orders,
   positions,
   risk,
+  runBacktest,
+  saveParam,
   signals,
+  strategies,
   streamState,
+  toggleStrategy,
   trades,
   watchlist
 } = useDashboard();
@@ -105,9 +111,9 @@ watch(activeView, (view) => {
 const navItems: NavItem[] = [
   { label: "控制台", icon: Home, view: "dashboard" },
   { label: "实盘配置", icon: Settings2, view: "settings" },
-  { label: "策略管理", icon: ClipboardList },
+  { label: "策略管理", icon: ClipboardList, view: "strategies" },
   { label: "候选股票", icon: ListChecks },
-  { label: "持仓管理", icon: Package },
+  { label: "持仓管理", icon: Package, view: "positions" },
   { label: "订单管理", icon: ReceiptText },
   { label: "成交记录", icon: Database, view: "trades" },
   { label: "风控中心", icon: ShieldCheck },
@@ -692,7 +698,7 @@ function timeOnly(value?: string): string {
 
               <section class="ops-bottom-grid">
             <article class="summary-panel">
-              <header class="summary-head">
+              <header class="summary-head clickable" @click="activeView = 'positions'">
                 <div>
                   <h3>持仓 ({{ positions.length }})</h3>
                   <p>总市值 {{ money(totalPositionValue) }} USD/HKD</p>
@@ -864,6 +870,41 @@ function timeOnly(value?: string): string {
             </aside>
           </section>
         </template>
+
+        <section v-else-if="activeView === 'strategies'" class="strategy-management-view">
+          <header class="strategy-page-head">
+            <div>
+              <p class="eyebrow">STRATEGY CONTROL</p>
+              <h2>策略管理</h2>
+              <p>调整真实参与执行的参数，并查看由代码锁定的交易纪律。</p>
+            </div>
+            <div class="strategy-page-summary">
+              <span><strong>{{ strategies.filter((item) => item.enabled).length }}</strong>运行中</span>
+              <span><strong>{{ strategies.length }}</strong>策略总数</span>
+              <span><strong>HK / US</strong>覆盖市场</span>
+            </div>
+          </header>
+
+          <div class="strategy-management-list">
+            <StrategyCard
+              v-for="strategy in strategies"
+              :key="strategy.id"
+              :strategy="strategy"
+              @toggle="toggleStrategy"
+              @update-param="saveParam"
+              @backtest="runBacktest"
+            />
+          </div>
+        </section>
+
+        <PositionManagement
+          v-else-if="activeView === 'positions'"
+          :account="account"
+          :positions="positions"
+          :strategies="strategies"
+          :loading="loading"
+          @refresh="load"
+        />
 
         <section v-else-if="activeView === 'trades'" class="trades-view">
           <article class="query-panel">

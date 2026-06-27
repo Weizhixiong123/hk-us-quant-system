@@ -70,6 +70,7 @@ class AppState:
                     "take_profit_2_pct": 3.5,
                     "position_fraction_pct": 10.0,
                     "max_positions": 3,
+                    "max_daily_loss_pct": 3.0,
                 },
                 risk_controls=[
                     "单日最大亏损 3%",
@@ -323,6 +324,7 @@ class AppState:
                 1 for position in self.positions if position.strategy_id == "intraday_macd"
             )
         account = self._dashboard_account(live_snapshot)
+        intraday_params = self.params.intraday
         gateway_connected = bool(live_snapshot and live_snapshot.get("connected"))
         gateway_detail = str(live_snapshot.get("detail", "")) if live_snapshot else "未初始化实盘网关"
         return [
@@ -335,14 +337,25 @@ class AppState:
             RiskRuleStatus(
                 code="daily_loss",
                 name="单日最大亏损",
-                status="pass" if account.day_pnl_pct > -3 else "blocked",
-                detail=f"当前 {account.day_pnl_pct:.2f}%，阈值 -3.00%",
+                status=(
+                    "pass"
+                    if account.day_pnl_pct > -intraday_params.max_daily_loss_pct
+                    else "blocked"
+                ),
+                detail=(
+                    f"当前 {account.day_pnl_pct:.2f}%，"
+                    f"阈值 -{intraday_params.max_daily_loss_pct:.2f}%"
+                ),
             ),
             RiskRuleStatus(
                 code="intraday_position_count",
                 name="日内持仓数量",
-                status="watch" if intraday_positions >= 2 else "pass",
-                detail=f"{intraday_positions}/3",
+                status=(
+                    "watch"
+                    if intraday_positions >= max(1, intraday_params.max_positions - 1)
+                    else "pass"
+                ),
+                detail=f"{intraday_positions}/{intraday_params.max_positions}",
             ),
             RiskRuleStatus(
                 code="pdt",
@@ -396,12 +409,14 @@ class AppState:
             strategy = self._find_strategy(strategy_id)
             strategy.params.update(params)
             strategy.updated_at = self._now()
+            self.params.update(strategy_id, params)
+            if strategy_id == "intraday_macd" and "max_daily_loss_pct" in params:
+                self.account.max_daily_loss_pct = self.params.intraday.max_daily_loss_pct
             self._append_log(
                 source=strategy_id,
                 severity="info",
                 message=f"{strategy.name} 参数已更新：{', '.join(params.keys())}",
             )
-            self.params.update(strategy_id, params)
             return strategy
 
     def run_backtest(self, request: BacktestRequest) -> BacktestResult:
