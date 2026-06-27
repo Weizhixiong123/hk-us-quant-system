@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
@@ -46,6 +48,13 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router, prefix="/api")
+
+    # 临时诊断:把未处理异常的完整 traceback 直接返回到响应,方便在浏览器排查 500。
+    # 定位修复后应移除这段。
+    @app.exception_handler(Exception)
+    async def _debug_traceback_handler(request: Request, exc: Exception):
+        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        return PlainTextResponse(detail, status_code=500)
 
     frontend_dist = _frontend_dist_dir()
     if frontend_dist is not None:
