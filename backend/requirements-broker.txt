@@ -1,0 +1,14 @@
+# 券商网关依赖 —— 仅「模拟盘 / 实盘」真连券商时需要;干跑完全不需要。
+#
+# 重要:vnpy 的网关插件 vnpy_futu / vnpy_tiger 不在 PyPI 上,
+# 不能用普通 pip install,必须从官方源 / GitHub 安装。
+# 这也是当初把它们放进 requirements.txt 会让 repair-runtime.bat 失败的原因。
+#
+# 在 runtime 环境里安装(示例,具体仓库地址以你开发机当初使用的为准):
+#
+#   runtime\Scripts\python.exe -m pip install vnpy
+#   runtime\Scripts\python.exe -m pip install git+<富途网关 vnpy_futu 的仓库地址>
+#   runtime\Scripts\python.exe -m pip install git+https://github.com/weijiaxing/vnpy_tiger.git
+#
+# vnpy 主包本身在 PyPI 有(可直接 pip install):
+vnpy>=3.9.0
