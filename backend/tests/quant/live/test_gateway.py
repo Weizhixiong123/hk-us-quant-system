@@ -170,6 +170,40 @@ def test_query_history_minute_requires_connection():
         gateway.query_history_minute("AAPL")
 
 
+def test_futu_connect_fails_fast_when_opend_is_unavailable(monkeypatch):
+    import pytest
+
+    from quant.live.config import FutuGatewayConfig
+    from quant.live.gateway import FutuLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    config = FutuGatewayConfig(
+        "127.0.0.1",
+        11111,
+        "SIMULATE",
+        "HK",
+        ("HK",),
+        True,
+        False,
+    )
+    state = LiveGatewayState()
+    gateway = FutuLiveGateway(config, state)
+
+    def refuse_connection(*args, **kwargs):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(
+        "quant.live.gateway.socket.create_connection",
+        refuse_connection,
+    )
+
+    with pytest.raises(ConnectionError, match="切换到干跑模式"):
+        gateway.connect()
+
+    assert state.snapshot()["connected"] is False
+    assert "FutuOpenD" in state.snapshot()["detail"]
+
+
 def test_tiger_query_history_minute_requires_connection():
     import pytest
 

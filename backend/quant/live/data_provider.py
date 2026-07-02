@@ -50,6 +50,7 @@ class DefaultLiveDataProvider:
         self,
         market_data: BarAggregator,
         symbols: list[SymbolInfo] | None = None,
+        intraday_symbols: list[SymbolInfo] | None = None,
         daily_loader: DailyLoader | None = None,
         today: date | None = None,
         fundamentals_source: FundamentalsSource | None = None,
@@ -58,6 +59,7 @@ class DefaultLiveDataProvider:
     ) -> None:
         self.market_data = market_data
         self.symbols = symbols or all_symbols()
+        self.intraday_symbols = list(intraday_symbols) if intraday_symbols is not None else self.symbols
         self.daily_loader = daily_loader or load_daily
         self.today = today
         self.fundamentals_source = fundamentals_source or default_fundamentals_source
@@ -67,7 +69,7 @@ class DefaultLiveDataProvider:
 
     def intraday_candidates(self) -> list[IntradayCandidate]:
         candidates: list[IntradayCandidate] = []
-        for item in self.symbols:
+        for item in self.intraday_symbols:
             daily = self._load_daily(item, lookback_days=140)
             if daily is None or len(daily) < 21:
                 continue

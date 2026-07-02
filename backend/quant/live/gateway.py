@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 from quant.live.config import FutuGatewayConfig, TigerGatewayConfig
 from quant.live.market_data import Bar
 from quant.live.state import LiveGatewayState
@@ -17,6 +19,11 @@ _FUTU_US_DEFAULT_EXCHANGE = "SMART"
 _TIGER_US_DEFAULT_EXCHANGE = "NASDAQ"
 
 
+def _check_tcp_endpoint(host: str, port: int, timeout: float = 1.0) -> None:
+    with socket.create_connection((host, port), timeout=timeout):
+        pass
+
+
 class FutuLiveGateway:
     """vnpy 富途网关封装。仅本地(连 FutuOpenD)可运行。
 
@@ -31,6 +38,16 @@ class FutuLiveGateway:
         self._event_engine = None
 
     def connect(self) -> None:
+        try:
+            _check_tcp_endpoint(self.config.host, self.config.port)
+        except OSError as exc:
+            detail = (
+                f"无法连接 FutuOpenD {self.config.host}:{self.config.port}，"
+                "请启动 FutuOpenD 或切换到干跑模式"
+            )
+            self.state.set_connected(False, detail)
+            raise ConnectionError(detail) from exc
+
         # 延迟 import:远程环境无 vnpy,导入只在本地真正调用时发生
         from vnpy.event import EventEngine
         from vnpy.trader.engine import MainEngine

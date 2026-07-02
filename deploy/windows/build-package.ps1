@@ -3,8 +3,7 @@ param(
     [string]$PackageName = "hk-us-quant-client",
     [string]$OutputDir = "",
     [switch]$SkipFrontendBuild,
-    [switch]$NoRuntime,
-    [switch]$NoZip
+    [switch]$NoRuntime
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,7 +16,12 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 
 $releaseRoot = (New-Item -ItemType Directory -Force -Path $OutputDir).FullName
 $packageRoot = Join-Path $releaseRoot $PackageName
-$zipPath = Join-Path $releaseRoot "$PackageName.zip"
+
+function Write-Step {
+    param([string]$Message)
+
+    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $Message"
+}
 
 function Remove-InRelease {
     param([string]$Path)
@@ -46,29 +50,12 @@ function Copy-RequiredItem {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
-function New-ZipPackage {
-    param(
-        [string]$SourceDirectory,
-        [string]$DestinationZip
-    )
-
-    # 只用 Windows 自带的 tar(全路径),避免 git bash 的 MSYS tar 把 "E:" 当远程主机
-    $windowsTar = Join-Path $env:SystemRoot "System32\tar.exe"
-    if (Test-Path -LiteralPath $windowsTar) {
-        & $windowsTar -a -cf $DestinationZip -C $SourceDirectory .
-        if ($LASTEXITCODE -ne 0) {
-            throw "tar failed with exit code $LASTEXITCODE"
-        }
-        return
-    }
-
-    Compress-Archive -Path (Join-Path $SourceDirectory "*") -DestinationPath $DestinationZip -Force
-}
-
 if (-not $SkipFrontendBuild) {
+    Write-Step "Building frontend..."
     Push-Location (Join-Path $repoRoot "frontend")
     try {
         if (-not (Test-Path -LiteralPath "node_modules")) {
+            Write-Step "Installing frontend dependencies..."
             npm ci
         }
         npm run build
@@ -77,21 +64,26 @@ if (-not $SkipFrontendBuild) {
         Pop-Location
     }
 }
+else {
+    Write-Step "Skipping frontend build."
+}
 
 $frontendDist = Join-Path $repoRoot "frontend\dist"
 if (-not (Test-Path -LiteralPath (Join-Path $frontendDist "index.html"))) {
     throw "frontend/dist/index.html not found. Run frontend build first."
 }
 
+Write-Step "Cleaning previous package..."
 Remove-InRelease $packageRoot
-Remove-InRelease $zipPath
 
+Write-Step "Creating package directories..."
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "backend") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "frontend") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "data") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "logs") | Out-Null
 
+Write-Step "Copying application files..."
 Copy-RequiredItem (Join-Path $repoRoot "backend\app") (Join-Path $packageRoot "backend")
 Copy-RequiredItem (Join-Path $repoRoot "backend\quant") (Join-Path $packageRoot "backend")
 Copy-RequiredItem (Join-Path $repoRoot "backend\requirements.txt") (Join-Path $packageRoot "backend")
@@ -105,18 +97,17 @@ Copy-RequiredItem (Join-Path $scriptDir "README-local-deploy.md") $packageRoot
 if (-not $NoRuntime) {
     $venv = Join-Path $repoRoot "backend\.venv"
     if (Test-Path -LiteralPath (Join-Path $venv "Scripts\python.exe")) {
+        Write-Step "Copying Python runtime (this may take several minutes)..."
         Copy-RequiredItem $venv (Join-Path $packageRoot "runtime")
+        Write-Step "Python runtime copied."
     }
     else {
         Write-Warning "backend\.venv was not found. Package will require repair-runtime.bat on client machine."
     }
 }
-
-if (-not $NoZip) {
-    New-ZipPackage -SourceDirectory $packageRoot -DestinationZip $zipPath
+else {
+    Write-Step "Skipping Python runtime."
 }
 
+Write-Step "Package build completed."
 Write-Host "Package directory: $packageRoot"
-if (-not $NoZip) {
-    Write-Host "Package zip:       $zipPath"
-}

@@ -109,6 +109,25 @@ def test_intraday_entry_handles_gateway_failure():
     assert result.reasons == ("下单失败：broker down",)
 
 
+def test_intraday_limit_ignores_positions_owned_by_other_strategies():
+    gateway = FakeGateway()
+
+    result = execute_intraday_entry(
+        gateway=gateway,
+        symbol="TSLA",
+        price=100,
+        total_equity=100_000,
+        current_symbols=["AAPL", "MSFT", "NVDA"],
+        intraday_symbols=["AAPL"],
+        stopped_symbols_today=[],
+        daily_loss_pct=0,
+        max_positions=3,
+    )
+
+    assert result.submitted is True
+    assert result.quantity == 100
+
+
 def test_exit_order_closes_long_position_with_short_close():
     gateway = FakeGateway()
 

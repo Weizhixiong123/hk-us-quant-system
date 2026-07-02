@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.services.state import AppState
 from quant.live.state import LiveGatewayState
@@ -40,15 +40,14 @@ def test_app_state_dashboard_uses_live_gateway_snapshot():
     assert dashboard.logs[0].source == "gateway"
 
 
-def test_app_state_dashboard_falls_back_without_live_account():
+def test_app_state_dashboard_does_not_show_seed_data_without_live_account():
     state = AppState(LiveGatewayState())
 
     dashboard = state.dashboard()
 
-    assert dashboard.account.source == "dry_run"
-    assert dashboard.account.total_equity == 1_000_000
-    assert dashboard.positions
-    assert dashboard.orders
+    assert dashboard.positions == []
+    assert dashboard.orders == []
+    assert dashboard.trades == []
     assert dashboard.risk[0].status == "blocked"
 
 
@@ -126,6 +125,44 @@ def test_risk_intraday_count_matches_live_positions():
     assert intraday.detail == "0/3"
 
 
+def test_risk_counts_only_positions_opened_by_intraday_strategy(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": True, "reasons": ["日内开仓"]},
+        db_path=db,
+    )
+    record_live_event(
+        kind="signal",
+        strategy_id="trend_portfolio",
+        symbol="0700.HK",
+        payload={"submitted": True, "reasons": ["中长线建仓"]},
+        db_path=db,
+    )
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=700_000, frozen=300_000)
+    )
+    live_state.update_position(GatewayPosition("AAPL", "多", 100, 100, 0))
+    live_state.update_position(GatewayPosition("HK.00700", "多", 100, 300, 0))
+    live_state.update_position(GatewayPosition("MSFT", "多", 100, 200, 0))
+
+    dashboard = AppState(live_state, db_path=db).dashboard()
+    strategies = {position.symbol: position.strategy_id for position in dashboard.positions}
+    intraday = next(item for item in dashboard.risk if item.code == "intraday_position_count")
+
+    assert strategies == {
+        "AAPL": "intraday_macd",
+        "HK.00700": "trend_portfolio",
+        "MSFT": "live",
+    }
+    assert intraday.detail == "1/3"
+
+
 def test_dashboard_watchlist_from_live_signals(tmp_path):
     from quant.live.store import record_live_event
 
@@ -148,18 +185,48 @@ def test_dashboard_watchlist_from_live_signals(tmp_path):
     aapl = next(w for w in watchlist if w.symbol == "AAPL")
     assert aapl.market == "US"
     assert aapl.tags == ["15m 缩量", "5m 金叉"]
+    assert aapl.triggered is False
 
 
-def test_dashboard_watchlist_includes_live_selection_events(tmp_path):
+def test_dashboard_watchlist_marks_submitted_signal_triggered_today(tmp_path):
     from quant.live.store import record_live_event
 
     db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": True, "reasons": ["15m 金叉"]},
+        db_path=db,
+    )
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": False, "reasons": ["持仓观察"]},
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert len(watchlist) == 1
+    assert watchlist[0].triggered is True
+
+
+def test_dashboard_watchlist_includes_live_selection_events(monkeypatch, tmp_path):
+    from quant.live.store import record_live_event
+    from quant.live.settings import save_live_settings
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings({"intraday_universe": {"selection_mode": "auto"}}, settings_path)
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
     created_at = datetime(2026, 6, 25, 13, 0, tzinfo=timezone.utc)
     record_live_event(
         kind="selection",
         strategy_id="intraday_macd",
         created_at=created_at,
-        payload={"symbols": ["AAPL", "MSFT"], "candidate_count": 2},
+        payload={"symbols": ["AAPL", "MSFT"], "candidate_count": 2, "selection_mode": "auto"},
         db_path=db,
     )
 
@@ -174,6 +241,69 @@ def test_dashboard_watchlist_includes_live_selection_events(tmp_path):
     assert [item.symbol for item in watchlist] == ["AAPL", "MSFT"]
     assert watchlist[0].tags == ["盘前筛选", "等待 15m 收线确认"]
     assert watchlist[0].updated_at == created_at
+
+
+def test_dashboard_watchlist_labels_manual_selection(monkeypatch, tmp_path):
+    from quant.live.store import record_live_event
+    from quant.live.settings import save_live_settings
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings({"intraday_universe": {"selection_mode": "manual"}}, settings_path)
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+    created_at = datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc)
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=created_at,
+        payload={
+            "symbols": ["TSLA"],
+            "selection_mode": "manual",
+            "names": {"TSLA": "Tesla"},
+        },
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert watchlist[0].name == "Tesla"
+    assert watchlist[0].tags == ["手动选股", "等待 MACD 开仓信号"]
+
+
+def test_dashboard_watchlist_only_shows_latest_selection_for_current_mode(monkeypatch, tmp_path):
+    from quant.live.settings import save_live_settings
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings({"intraday_universe": {"selection_mode": "manual"}}, settings_path)
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc),
+        payload={"symbols": ["AAPL", "MSFT"], "selection_mode": "auto"},
+        db_path=db,
+    )
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        created_at=datetime(2026, 6, 24, 8, 30, tzinfo=timezone.utc),
+        payload={"submitted": False, "reasons": ["旧自动信号"]},
+        db_path=db,
+    )
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc),
+        payload={"symbols": ["TSLA"], "selection_mode": "manual"},
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert [item.symbol for item in watchlist] == ["TSLA"]
 
 
 def test_dashboard_signals_from_live_events(tmp_path):
@@ -212,3 +342,101 @@ def test_broker_account_day_pnl_from_gateway():
     assert account.source == "broker"
     assert account.day_pnl == 2_000  # 不再写死 0,来自券商账户
     assert account.day_pnl_pct == 2.0  # 2000 / (102000-2000) * 100
+
+
+def test_dashboard_watchlist_score_is_no_longer_hardcoded_072(monkeypatch, tmp_path):
+    """回归测试:watchlist 不再统一写 0.72 — 至少有 score_components 全 1 的输入时分数应当显著高。"""
+    from quant.live.store import record_live_event
+    from quant.live.settings import save_live_settings
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings({"intraday_universe": {"selection_mode": "auto"}}, settings_path)
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+    # 用「未来 1 小时」时刻确保 freshness ≈ 1,不受系统时钟影响
+    fresh_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=fresh_at,
+        payload={
+            "symbols": ["AAPL"],
+            "candidate_count": 1,
+            "selection_mode": "auto",
+            "score_components": {
+                "AAPL": {
+                    "consistency": 1.0,
+                    "daily_volume_ratio": 2.0,
+                    "intraday_volume_ratio": 1.0,
+                    "prev_amplitude_pct": 4.0,
+                    "price_vs_ma20_pct": 2.0,
+                    "price_vs_ma30_pct": 2.0,
+                    "short_term_gain_pct": 10.0,
+                    "avg_turnover": 150_000_000.0,
+                }
+            },
+        },
+        db_path=db,
+    )
+
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+    rows = AppState(live_state, db_path=db).dashboard().watchlist
+
+    assert len(rows) == 1
+    assert rows[0].score != 0.72  # 不再是写死的常量
+    assert rows[0].freshness > 0.99  # fresh_at 在未来,freshness 钳到 1
+    assert rows[0].score_breakdown["weighted"] >= 0.95
+    assert rows[0].score >= 0.95    # 全优输入 → 接近满分
+
+
+def test_dashboard_watchlist_breakdown_exposes_5_dims(monkeypatch, tmp_path):
+    """score_breakdown 必须含五维 + weighted 六个键。"""
+    from quant.live.store import record_live_event
+    from quant.live.settings import save_live_settings
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings({"intraday_universe": {"selection_mode": "auto"}}, settings_path)
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+    fresh_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=fresh_at,
+        payload={
+            "symbols": ["AAPL"],
+            "selection_mode": "auto",
+            "score_components": {
+                "AAPL": {
+                    "consistency": 0.9,
+                    "daily_volume_ratio": 1.6,
+                    "intraday_volume_ratio": 0.8,
+                    "prev_amplitude_pct": 5.0,
+                    "price_vs_ma20_pct": 1.5,
+                    "price_vs_ma30_pct": 1.5,
+                    "short_term_gain_pct": 12.0,
+                    "avg_turnover": 80_000_000.0,
+                }
+            },
+        },
+        db_path=db,
+    )
+
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=1_000_000, frozen=0)
+    )
+    rows = AppState(live_state, db_path=db).dashboard().watchlist
+
+    bd = rows[0].score_breakdown
+    assert bd is not None
+    assert set(bd) == {"consistency", "volume_ratio", "atr_quality",
+                       "trend_filter", "liquidity_rank", "weighted"}
+    assert bd["consistency"] == 0.9
+    assert 0.0 <= rows[0].score <= 1.0
+    assert 0.0 <= rows[0].freshness <= 1.0
+    # AAPL 不在 manual 列表里,shortable 默认 False
+    assert rows[0].shortable is False

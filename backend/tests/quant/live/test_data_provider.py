@@ -42,6 +42,18 @@ def test_default_data_provider_builds_intraday_candidates_from_daily_and_tick():
     assert candidates[0].avg_turnover > 0
 
 
+def test_intraday_candidates_can_use_a_separate_manual_universe():
+    provider = DefaultLiveDataProvider(
+        market_data=BarAggregator(),
+        symbols=[SymbolInfo("AAPL", "Apple", "US")],
+        intraday_symbols=[SymbolInfo("TSLA", "Tesla", "US")],
+        daily_loader=_daily,
+        today=date(2026, 6, 23),
+    )
+
+    assert [item.symbol for item in provider.intraday_candidates()] == ["TSLA"]
+
+
 def test_default_data_provider_builds_daily_timing_snapshot():
     provider = DefaultLiveDataProvider(
         market_data=BarAggregator(),

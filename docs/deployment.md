@@ -40,7 +40,7 @@ npm run dev
 
 ## 3. Windows 本地单机部署包
 
-在开发机上生成客户可解压运行的本地包：
+在开发机上生成客户可运行的本地目录包：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\windows\build-package.ps1
@@ -50,10 +50,9 @@ powershell -ExecutionPolicy Bypass -File .\deploy\windows\build-package.ps1
 
 ```text
 release\hk-us-quant-client\
-release\hk-us-quant-client.zip
 ```
 
-客户解压后双击 `start.bat`，浏览器访问 `http://127.0.0.1:8000`。如果客户机器上的内置运行时不可用，可双击 `repair-runtime.bat` 重建依赖。
+手动压缩该目录后即可发送给客户。客户解压后双击 `start.bat`，浏览器访问 `http://127.0.0.1:8000`。如果客户机器上的内置运行时不可用，可双击 `repair-runtime.bat` 重建依赖。
 
 ## 4. 生产部署建议
 

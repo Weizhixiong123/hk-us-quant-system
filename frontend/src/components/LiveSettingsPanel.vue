@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import {
-  AlertTriangle,
   Building2,
   CheckCircle2,
   Clock3,
   Link2,
   PlayCircle,
-  Save,
   ShieldCheck,
   UserRound
 } from "lucide-vue-next";
@@ -23,16 +21,12 @@ import type {
 
 type RuntimeMode = "dry_run" | "sandbox" | "live";
 
-const LIVE_ACK = "我确认启用实盘交易";
-
 const loading = ref(false);
-const saving = ref(false);
 const applying = ref(false);
 const message = ref("");
 const error = ref("");
 const privateKeyDraft = ref("");
 const clearPrivateKey = ref(false);
-const liveAck = ref("");
 
 const form = reactive<LiveSettingsSnapshot>({
   runtime: {
@@ -66,6 +60,10 @@ const form = reactive<LiveSettingsSnapshot>({
   },
   safety: {
     operator_note: ""
+  },
+  intraday_universe: {
+    selection_mode: "auto",
+    manual_symbols: []
   },
   saved_at: "",
   restart_required: true
@@ -110,20 +108,14 @@ const brokerEnvironmentDetail = computed(() => {
   }
   return runtimeMode.value === "live" ? "老虎底层环境：live" : "老虎底层环境：sandbox";
 });
-const liveAlreadyConfirmed = computed(() =>
-  form.runtime.broker === "futu"
-    ? form.futu.real_trading_confirmed
-    : form.tiger.live_trading_confirmed
-);
-const liveAckReady = computed(() => liveAlreadyConfirmed.value || liveAck.value.trim() === LIVE_ACK);
 const usesDefaultEquity = computed(() => runtimeMode.value === "dry_run");
-const canSave = computed(() => runtimeMode.value !== "live" || liveAckReady.value);
 
 function applySnapshot(snapshot: LiveSettingsSnapshot): void {
   Object.assign(form.runtime, snapshot.runtime);
   Object.assign(form.futu, snapshot.futu);
   Object.assign(form.tiger, snapshot.tiger);
   Object.assign(form.safety, snapshot.safety);
+  Object.assign(form.intraday_universe, snapshot.intraday_universe);
   form.saved_at = snapshot.saved_at;
   form.restart_required = snapshot.restart_required;
 }
@@ -141,12 +133,16 @@ async function loadSettings(): Promise<void> {
 }
 
 function setBroker(value: LiveBroker): void {
+  error.value = "";
+  message.value = "";
   const currentMode = runtimeMode.value;
   form.runtime.broker = value;
   setRuntimeMode(currentMode);
 }
 
 function setRuntimeMode(value: RuntimeMode): void {
+  error.value = "";
+  message.value = "";
   form.runtime.dry_run = value === "dry_run";
   if (form.runtime.broker === "futu") {
     form.futu.trd_env = (value === "live" ? "REAL" : "SIMULATE") as FutuTradeEnv;
@@ -157,12 +153,10 @@ function setRuntimeMode(value: RuntimeMode): void {
 
 function buildPayload(): LiveSettingsUpdate {
   const payload: LiveSettingsUpdate = {
-    runtime: { ...form.runtime },
+    runtime: { ...form.runtime, enabled: true },
     futu: {
       ...form.futu,
-      market: form.futu.markets[0] ?? "HK",
-      real_trading_confirmed:
-        form.futu.trd_env === "REAL" ? liveAckReady.value : false
+      market: form.futu.markets[0] ?? "HK"
     },
     tiger: {
       tiger_id: form.tiger.tiger_id,
@@ -174,9 +168,7 @@ function buildPayload(): LiveSettingsUpdate {
       max_contracts: Number(form.tiger.max_contracts),
       use_preset_contracts: form.tiger.use_preset_contracts,
       market: form.tiger.markets[0] ?? "US",
-      markets: form.tiger.markets,
-      live_trading_confirmed:
-        form.tiger.environment === "live" ? liveAckReady.value : false
+      markets: form.tiger.markets
     },
     safety: {
       operator_note: form.safety.operator_note
@@ -209,32 +201,7 @@ function toggleMarket(markets: Market[], market: Market): void {
   markets.push(market);
 }
 
-async function saveSettings(): Promise<void> {
-  if (!canSave.value) {
-    error.value = `请输入“${LIVE_ACK}”`;
-    return;
-  }
-  saving.value = true;
-  error.value = "";
-  message.value = "";
-  try {
-    applySnapshot(await saveLiveSettings(buildPayload()));
-    privateKeyDraft.value = "";
-    clearPrivateKey.value = false;
-    liveAck.value = "";
-    message.value = "配置已保存，重启后端后生效";
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : "配置保存失败";
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function saveAndApply(): Promise<void> {
-  if (!canSave.value) {
-    error.value = `请输入“${LIVE_ACK}”`;
-    return;
-  }
+async function applySettings(): Promise<void> {
   applying.value = true;
   error.value = "";
   message.value = "";
@@ -242,17 +209,16 @@ async function saveAndApply(): Promise<void> {
     applySnapshot(await saveLiveSettings(buildPayload()));
     privateKeyDraft.value = "";
     clearPrivateKey.value = false;
-    liveAck.value = "";
     const result = await reloadRuntime();
     if (result.ok) {
       message.value = result.runtime_running
-        ? `已保存并应用：引擎运行中（${result.runtime_broker}${result.runtime_dry_run ? " · 干跑" : ""}）`
-        : "已保存并应用：引擎已停止";
+        ? `配置已应用：${result.runtime_dry_run ? "干跑模式" : `${activeBrokerLabel.value}已连接`}`
+        : "配置已应用";
     } else {
       error.value = `应用失败：${result.error ?? "未知错误"}`;
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : "保存并应用失败";
+    error.value = err instanceof Error ? err.message : "应用配置失败";
   } finally {
     applying.value = false;
   }
@@ -294,9 +260,9 @@ onMounted(loadSettings);
         <div>
           <span>当前账户</span>
           <strong>{{ activeBrokerLabel }} · {{ runtimeModeLabel }}</strong>
-          <small class="status-pill" :class="{ active: form.runtime.enabled }">
+          <small class="status-pill active">
             <CheckCircle2 :size="13" />
-            {{ form.runtime.enabled ? "运行时已启用" : "运行时未启用" }}
+            应用后自动运行
           </small>
         </div>
       </article>
@@ -321,7 +287,7 @@ onMounted(loadSettings);
           <strong :class="runtimeMode === 'live' ? 'danger-text' : 'ok-text'">
             {{ runtimeMode === "live" ? "实盘" : "非实盘" }}
           </strong>
-          <small>{{ runtimeMode === "live" ? "需要客户确认" : "安全模式" }}</small>
+          <small>{{ runtimeMode === "live" ? "应用后直接连接券商" : "安全模式" }}</small>
         </div>
       </article>
     </section>
@@ -342,13 +308,6 @@ onMounted(loadSettings);
             </div>
           </div>
         </header>
-
-        <div class="setting-row runtime-toggle">
-          <label class="switch-row">
-            <input v-model="form.runtime.enabled" type="checkbox" />
-            <span>启用后台运行时</span>
-          </label>
-        </div>
 
         <div class="field-group">
           <span class="field-title">交易平台</span>
@@ -465,7 +424,7 @@ onMounted(loadSettings);
           <ShieldCheck :size="28" />
           <div>
             <strong>连接状态</strong>
-            <span>配置已就绪，服务未启动</span>
+            <span>{{ runtimeMode === "dry_run" ? "干跑模式不连接券商" : "应用后自动连接 FutuOpenD" }}</span>
           </div>
           <i />
         </div>
@@ -555,63 +514,29 @@ onMounted(loadSettings);
           <ShieldCheck :size="28" />
           <div>
             <strong>连接状态</strong>
-            <span>配置已就绪，服务未启动</span>
+            <span>{{ runtimeMode === "dry_run" ? "干跑模式不连接券商" : "应用后自动连接老虎网关" }}</span>
           </div>
           <i />
         </div>
       </article>
 
-      <article class="panel settings-card safety-card">
-        <header class="settings-card-head">
-          <div class="settings-heading">
-            <div class="settings-icon small">
-              <ShieldCheck :size="24" />
-            </div>
-            <div>
-              <h2>实盘确认</h2>
-              <p>为保障资金安全，请完成确认</p>
-            </div>
-          </div>
-          <ShieldCheck :size="19" />
-        </header>
-
-        <div class="live-ack" :class="{ armed: runtimeMode === 'live' }">
-          <AlertTriangle :size="22" />
+      <article class="panel settings-apply-card">
+        <div class="settings-apply-copy">
+          <div class="settings-icon small"><CheckCircle2 :size="24" /></div>
           <div>
-            <strong>{{ runtimeMode === "live" ? "实盘模式待确认" : "当前不触发实盘确认" }}</strong>
-            <span>启用实盘前由客户本人输入确认短语。</span>
+            <h2>应用当前配置</h2>
+            <p>保存全部字段并立即按 {{ activeBrokerLabel }} · {{ runtimeModeLabel }} 模式运行。</p>
           </div>
         </div>
-
-        <label class="ack-input">
-          <span>确认短语</span>
-          <input v-model="liveAck" :placeholder="LIVE_ACK" />
-        </label>
-
-        <label class="ack-input note-input">
-          <span>操作备注（可选）</span>
-          <textarea
-            v-model="form.safety.operator_note"
-            rows="4"
-            placeholder="填写操作备注，便于后续审计与追踪（可选）"
-          />
-          <small>{{ form.safety.operator_note.length }} / 200</small>
-        </label>
-
-        <button class="save-button" type="button" :disabled="saving || applying || loading || !canSave" @click="saveSettings">
-          <Save :size="22" />
-          <span>{{ saving ? "保存中" : "保存配置" }}</span>
-        </button>
-
-        <button class="save-button apply-button" type="button" :disabled="saving || applying || loading || !canSave" @click="saveAndApply">
-          <CheckCircle2 :size="22" />
-          <span>{{ applying ? "应用中" : "保存并应用" }}</span>
-        </button>
-
-        <div class="settings-foot">
-          <CheckCircle2 :size="16" />
-          <span>「保存并应用」即时生效（{{ activeBrokerLabel }}）；「保存配置」仅写入，需重启后端。</span>
+        <div class="settings-apply-summary">
+          <span><strong>交易平台</strong>{{ activeBrokerLabel }}</span>
+          <span><strong>运行模式</strong>{{ runtimeModeLabel }}</span>
+          <span><strong>覆盖市场</strong>{{ (form.runtime.broker === "futu" ? form.futu.markets : form.tiger.markets).join(" / ") }}</span>
         </div>
+        <button class="save-button" type="button" :disabled="applying || loading" @click="applySettings">
+          <CheckCircle2 :size="22" />
+          <span>{{ applying ? "应用中" : "应用配置" }}</span>
+        </button>
       </article>
     </section>
   </section>

@@ -23,15 +23,12 @@ def test_save_live_settings_redacts_private_key_in_public_view(tmp_path):
     assert public["tiger"]["private_key_configured"] is True
 
 
-def test_save_live_settings_rejects_live_without_confirmation(tmp_path):
+def test_save_live_settings_accepts_live_without_confirmation(tmp_path):
     path = tmp_path / "live-settings.json"
 
-    try:
-        save_live_settings({"tiger": {"environment": "live"}}, path)
-    except ValueError as exc:
-        assert "live mode requires" in str(exc)
-    else:
-        raise AssertionError("expected live settings to require confirmation")
+    settings = save_live_settings({"tiger": {"environment": "live"}}, path)
+
+    assert settings["tiger"]["environment"] == "live"
 
 
 def test_clear_private_key(tmp_path):
@@ -41,3 +38,29 @@ def test_clear_private_key(tmp_path):
     settings = save_live_settings({"tiger": {"clear_private_key": True}}, path)
 
     assert settings["tiger"]["private_key"] == ""
+
+
+def test_manual_intraday_universe_is_normalized_and_deduplicated(tmp_path):
+    path = tmp_path / "live-settings.json"
+
+    settings = save_live_settings(
+        {
+            "intraday_universe": {
+                "selection_mode": "manual",
+                "manual_symbols": [
+                    {"symbol": "700", "name": "腾讯控股", "market": "HK", "shortable": True},
+                    {"symbol": "0700.HK", "name": "重复项", "market": "HK"},
+                    {"symbol": "aapl.us", "name": "Apple", "market": "US"},
+                ],
+            }
+        },
+        path,
+    )
+
+    assert settings["intraday_universe"] == {
+        "selection_mode": "manual",
+        "manual_symbols": [
+            {"symbol": "0700.HK", "name": "腾讯控股", "market": "HK", "shortable": True},
+            {"symbol": "AAPL", "name": "Apple", "market": "US", "shortable": False},
+        ],
+    }

@@ -49,21 +49,12 @@ const paramDraft = reactive<Record<string, ParamValue>>({});
 
 const INTRADAY_PARAM_GROUPS: ParamGroup[] = [
   {
-    title: "退出与风控",
-    icon: Target,
-    params: [
-      { key: "stop_loss_pct", label: "固定止损", hint: "亏损达到阈值后立即全部平仓", unit: "%", min: 0.1, max: 10, step: 0.1 },
-      { key: "take_profit_1_pct", label: "第一档止盈", hint: "达到阈值后减仓 50%", unit: "%", min: 0.1, max: 20, step: 0.1 },
-      { key: "take_profit_2_pct", label: "第二档止盈", hint: "达到阈值后全部平仓", unit: "%", min: 0.1, max: 30, step: 0.1 },
-      { key: "max_daily_loss_pct", label: "单日最大亏损", hint: "触发后当日停止所有新交易", unit: "%", min: 0.5, max: 10, step: 0.1 }
-    ]
-  },
-  {
-    title: "仓位管理",
+    title: "仓位与风控",
     icon: WalletCards,
     params: [
       { key: "position_fraction_pct", label: "单次开仓仓位", hint: "按账户总权益计算目标市值", unit: "%", min: 1, max: 30, step: 1 },
-      { key: "max_positions", label: "最大同时持仓", hint: "日内策略允许持有的标的上限", unit: "只", min: 1, max: 10, step: 1 }
+      { key: "max_positions", label: "最大同时持仓", hint: "日内策略允许持有的标的上限", unit: "只", min: 1, max: 10, step: 1 },
+      { key: "max_daily_loss_pct", label: "单日最大亏损", hint: "触发后当日停止所有新交易", unit: "%", min: 0.5, max: 10, step: 0.1 }
     ]
   }
 ];
@@ -94,7 +85,7 @@ const INTRADAY_RULES: RuleGroup[] = [
   {
     title: "信号引擎",
     icon: BarChart3,
-    items: ["15 分钟主周期", "5 分钟二次确认", "MACD 12 / 26 / 9", "价格位于 15 分钟 5MA 正确方向"]
+    items: ["15 / 5 / 3 分钟三周期共振", "三周期柱同向抬高开多、走低开空", "持仓柱体反向同步即全平", "MACD 12 / 26 / 9"]
   },
   {
     title: "盘前筛选",
@@ -104,12 +95,12 @@ const INTRADAY_RULES: RuleGroup[] = [
   {
     title: "交易时段",
     icon: Clock3,
-    items: ["开盘 30 分钟后开始开仓", "收盘前 90 分钟停止开仓", "收盘前 10 分钟强制清仓", "港股午休时段不执行信号"]
+    items: ["开盘 30 分钟后开始开仓", "收盘前 90 分钟停止开仓", "进出场每 3 分钟收线评估", "港股午休时段不执行信号"]
   },
   {
     title: "执行约束",
     icon: ShieldCheck,
-    items: ["同一标的不重复加仓", "止损后当日禁止重开", "做空前校验可借券状态", "美股账户执行 PDT 检查"]
+    items: ["同一标的不重复加仓", "持仓数达上限停止开仓", "做空前校验可借券状态", "美股账户执行 PDT 检查"]
   }
 ];
 

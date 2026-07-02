@@ -50,12 +50,6 @@ def load_futu_config() -> FutuGatewayConfig:
         _REAL_TRADING_CONFIRM,
         bool(settings.get("real_trading_confirmed", False)),
     )
-    if trd_env == "REAL" and not real_confirmed:
-        raise ValueError(
-            "FUTU_TRD_ENV=REAL requires "
-            f"FUTU_REAL_TRADING_CONFIRM={_REAL_TRADING_CONFIRM}"
-        )
-
     return FutuGatewayConfig(
         host=os.getenv("FUTU_HOST", str(settings.get("host", "127.0.0.1"))),
         port=int(os.getenv("FUTU_PORT", str(settings.get("port", "11111")))),
@@ -83,12 +77,6 @@ def load_tiger_config() -> TigerGatewayConfig:
         _TIGER_LIVE_TRADING_CONFIRM,
         bool(settings.get("live_trading_confirmed", False)),
     )
-    if environment == "live" and not live_confirmed:
-        raise ValueError(
-            "TIGER_ENVIRONMENT=live requires "
-            f"TIGER_LIVE_TRADING_CONFIRM={_TIGER_LIVE_TRADING_CONFIRM}"
-        )
-
     return TigerGatewayConfig(
         tiger_id=os.getenv("TIGER_ID", str(settings.get("tiger_id", ""))),
         account=os.getenv("TIGER_ACCOUNT", str(settings.get("account", ""))),

@@ -84,6 +84,20 @@ def histogram_shrinking(
     raise ValueError("side must be 'long' or 'short'")
 
 
+def histogram_rising(points: Sequence[MacdPoint]) -> bool:
+    """最后一根 MACD 柱较上一根抬高。"""
+    if len(points) < 2:
+        return False
+    return points[-1].hist > points[-2].hist
+
+
+def histogram_falling(points: Sequence[MacdPoint]) -> bool:
+    """最后一根 MACD 柱较上一根下降。"""
+    if len(points) < 2:
+        return False
+    return points[-1].hist < points[-2].hist
+
+
 def _pivot_lows(values: Sequence[float], left: int = 2, right: int = 2) -> list[int]:
     pivots: list[int] = []
     for index in range(left, len(values) - right):
@@ -148,50 +162,40 @@ def has_top_divergence(
 
 def build_intraday_decision(
     closes_15m: Sequence[float],
-    lows_15m: Sequence[float],
-    highs_15m: Sequence[float],
     closes_5m: Sequence[float],
-    current_price: float,
-    ma5_15m: float,
+    closes_3m: Sequence[float],
     side: str,
     within_trade_window: bool,
-    shortable: bool = True,
 ) -> IntradayDecision:
+    """三周期(15m/5m/3m)MACD 柱动量同步决策。
+
+    开多:三周期柱均较各自上一根抬高;开空:三周期柱均较各自上一根下降。
+    """
+    if side not in ("long", "short"):
+        raise ValueError("side must be 'long' or 'short'")
+
     reasons: list[str] = []
     points_15m = macd(closes_15m)
     points_5m = macd(closes_5m)
-    hist_15m = [point.hist for point in points_15m]
+    points_3m = macd(closes_3m)
 
     if not within_trade_window:
         reasons.append("不在日内开仓时间窗")
-    if side == "short" and not shortable:
-        reasons.append("标的不在可做空名单")
 
-    if side == "long":
-        checks = {
-            "15min 绿柱缩短": histogram_shrinking(points_15m, "long"),
-            "15min 底背离": has_bottom_divergence(lows_15m[-len(hist_15m) :], hist_15m),
-            "15min 金叉": has_bullish_cross(points_15m),
-            "5min 金叉确认": has_bullish_cross(points_5m),
-            "价格站上 15min 5MA": current_price > ma5_15m,
-        }
-    elif side == "short":
-        checks = {
-            "15min 红柱缩短": histogram_shrinking(points_15m, "short"),
-            "15min 顶背离": has_top_divergence(highs_15m[-len(hist_15m) :], hist_15m),
-            "15min 死叉": has_bearish_cross(points_15m),
-            "5min 死叉确认": has_bearish_cross(points_5m),
-            "价格跌破 15min 5MA": current_price < ma5_15m,
-        }
-    else:
-        raise ValueError("side must be 'long' or 'short'")
+    momentum = histogram_rising if side == "long" else histogram_falling
+    label = "柱抬高" if side == "long" else "柱下降"
+    checks = {
+        f"15min {label}": momentum(points_15m),
+        f"5min {label}": momentum(points_5m),
+        f"3min {label}": momentum(points_3m),
+    }
 
-    passed = [label for label, ok in checks.items() if ok]
-    failed = [label for label, ok in checks.items() if not ok]
-    reasons.extend(f"{label}通过" for label in passed)
-    reasons.extend(f"{label}未满足" for label in failed)
+    passed = [name for name, ok in checks.items() if ok]
+    failed = [name for name, ok in checks.items() if not ok]
+    reasons.extend(f"{name}通过" for name in passed)
+    reasons.extend(f"{name}未满足" for name in failed)
 
-    hard_blocked = any(reason in {"不在日内开仓时间窗", "标的不在可做空名单"} for reason in reasons)
+    hard_blocked = "不在日内开仓时间窗" in reasons
     confidence = len(passed) / len(checks)
     action = side if confidence == 1 and not hard_blocked else "wait"
     return IntradayDecision(action=action, confidence=confidence, reasons=tuple(reasons))

@@ -26,7 +26,12 @@ class RuntimeManager:
 
     async def start(self) -> None:
         async with self._lock:
-            await self._build_and_start()
+            try:
+                await self._build_and_start()
+                self.last_error = None
+            except Exception as exc:
+                self._runtime = None
+                self.last_error = str(exc)
 
     async def stop(self) -> None:
         async with self._lock:

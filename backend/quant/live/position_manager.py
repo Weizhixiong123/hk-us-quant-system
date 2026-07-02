@@ -32,18 +32,23 @@ def plan_intraday_entry(
     last_price: float,
     current_symbols: Sequence[str],
     stopped_symbols_today: Sequence[str],
+    position_count_symbols: Sequence[str] | None = None,
     position_fraction_pct: float = 10.0,
     max_positions: int = 3,
     lot_size: int = 1,
 ) -> PositionPlan:
     normalized_symbol = _normalize_symbol(symbol)
     held_symbols = {_normalize_symbol(item) for item in current_symbols}
+    counted_symbols = {
+        _normalize_symbol(item)
+        for item in (position_count_symbols if position_count_symbols is not None else current_symbols)
+    }
     stopped_symbols = {_normalize_symbol(item) for item in stopped_symbols_today}
     blocks: list[str] = []
 
     if normalized_symbol in held_symbols:
         blocks.append("日内不重复加仓同一标的")
-    if len(held_symbols) >= max_positions:
+    if len(counted_symbols) >= max_positions:
         blocks.append("日内同时持仓数量已达上限")
     if normalized_symbol in stopped_symbols:
         blocks.append("该标的当日已止损，禁止再开仓")

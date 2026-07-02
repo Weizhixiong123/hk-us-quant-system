@@ -16,6 +16,7 @@ ParamValue = int | float | str | bool
 LiveBroker = Literal["futu", "tiger"]
 FutuTradeEnv = Literal["SIMULATE", "REAL"]
 TigerTradeEnv = Literal["sandbox", "live"]
+IntradaySelectionMode = Literal["auto", "manual"]
 
 
 class AccountSummary(BaseModel):
@@ -76,6 +77,11 @@ class WatchSymbol(BaseModel):
     score: float
     tags: list[str]
     updated_at: datetime
+    triggered: bool = False
+    # 评分明细(五维 + 加权和,freshness 之前)。None = 旧事件没持久化 payload
+    score_breakdown: dict[str, float] | None = None
+    freshness: float | None = None
+    shortable: bool | None = None
 
 
 class Signal(BaseModel):
@@ -240,11 +246,24 @@ class LiveSafetySettings(BaseModel):
     operator_note: str = ""
 
 
+class ManualSymbol(BaseModel):
+    symbol: str = Field(min_length=1, max_length=24, pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+    name: str = Field(default="", max_length=64)
+    market: Market
+    shortable: bool = False
+
+
+class IntradayUniverseSettings(BaseModel):
+    selection_mode: IntradaySelectionMode = "auto"
+    manual_symbols: list[ManualSymbol] = Field(default_factory=list, max_length=100)
+
+
 class LiveSettingsUpdate(BaseModel):
     runtime: LiveRuntimeSettings | None = None
     futu: FutuLiveSettings | None = None
     tiger: TigerLiveSettings | None = None
     safety: LiveSafetySettings | None = None
+    intraday_universe: IntradayUniverseSettings | None = None
 
 
 class LiveSettingsSnapshot(BaseModel):
@@ -252,6 +271,7 @@ class LiveSettingsSnapshot(BaseModel):
     futu: FutuLiveSettings
     tiger: PublicTigerLiveSettings
     safety: LiveSafetySettings
+    intraday_universe: IntradayUniverseSettings
     saved_at: datetime
     restart_required: bool = True
 

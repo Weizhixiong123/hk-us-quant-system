@@ -8,7 +8,6 @@ from quant.live.clock import (
     HolidayCalendar,
     Market,
     close_review_time,
-    force_close_time,
     is_bar_close,
     is_intraday_entry_window,
     is_month_end_rebalance_day,
@@ -20,9 +19,7 @@ from quant.live.clock import (
 
 ScheduleHook = Literal[
     "intraday_premarket_scan",
-    "intraday_5m_signal",
-    "intraday_15m_signal",
-    "intraday_force_close",
+    "intraday_3m_signal",
     "portfolio_daily_review",
     "portfolio_month_end_scan",
 ]
@@ -86,37 +83,16 @@ def build_due_actions(
             )
 
         if is_intraday_entry_window(local, market, holidays):
-            if is_bar_close(local, 5, market):
+            if is_bar_close(local, 3, market):
                 actions.append(
                     SchedulerAction(
-                        hook="intraday_5m_signal",
+                        hook="intraday_3m_signal",
                         strategy_id="intraday_macd",
                         market=market,
                         scheduled_for=_minute(local),
-                        reason="5min 收线后检查入场确认",
+                        reason="3min 收线后检查日内进出场(三周期柱动量)",
                     )
                 )
-            if is_bar_close(local, 15, market):
-                actions.append(
-                    SchedulerAction(
-                        hook="intraday_15m_signal",
-                        strategy_id="intraday_macd",
-                        market=market,
-                        scheduled_for=_minute(local),
-                        reason="15min 收线后检查主信号",
-                    )
-                )
-
-        if _same_minute(local, force_close_time(day, market)):
-            actions.append(
-                SchedulerAction(
-                    hook="intraday_force_close",
-                    strategy_id="intraday_macd",
-                    market=market,
-                    scheduled_for=_minute(local),
-                    reason="收盘前 10 分钟强制清仓",
-                )
-            )
 
         if _same_minute(local, close_review_time(day, market)):
             if is_month_end_rebalance_day(day, market, holidays):

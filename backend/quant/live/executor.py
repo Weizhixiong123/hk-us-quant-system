@@ -45,6 +45,7 @@ def execute_intraday_entry(
     current_symbols: Sequence[str],
     stopped_symbols_today: Sequence[str],
     daily_loss_pct: float,
+    intraday_symbols: Sequence[str] | None = None,
     max_daily_loss_pct: float = 3.0,
     pdt_trades_remaining: int | None = None,
     shortable: bool = True,
@@ -54,12 +55,14 @@ def execute_intraday_entry(
     lot_size: int = 1,
     exchange: str | None = None,
 ) -> ExecutionResult:
+    counted_symbols = intraday_symbols if intraday_symbols is not None else current_symbols
     plan = plan_intraday_entry(
         symbol=symbol,
         total_equity=total_equity,
         last_price=price,
         current_symbols=current_symbols,
         stopped_symbols_today=stopped_symbols_today,
+        position_count_symbols=counted_symbols,
         position_fraction_pct=position_fraction_pct,
         max_positions=max_positions,
         lot_size=lot_size,
@@ -67,7 +70,7 @@ def execute_intraday_entry(
     risk = evaluate_intraday_order(
         daily_loss_pct=daily_loss_pct,
         max_daily_loss_pct=max_daily_loss_pct,
-        open_intraday_positions=len({_normalize_symbol(item) for item in current_symbols}),
+        open_intraday_positions=len({_normalize_symbol(item) for item in counted_symbols}),
         max_intraday_positions=max_positions,
         symbol_stopped_today=_normalize_symbol(symbol) in {_normalize_symbol(item) for item in stopped_symbols_today},
         is_short=is_short,

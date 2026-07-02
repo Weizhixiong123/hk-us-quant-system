@@ -68,6 +68,18 @@ def test_reload_failure_stops_engine_and_reports_error():
     assert manager.last_error == "网关连接失败"
 
 
+def test_start_failure_keeps_api_available_and_reports_error():
+    def build(live_state, params):
+        return FakeRuntime("rt", fail_on_start=True)
+
+    manager = RuntimeManager(live_state=object(), params=object(), build=build)
+
+    asyncio.run(manager.start())
+
+    assert manager.runtime is None
+    assert manager.last_error == "网关连接失败"
+
+
 def test_concurrent_reloads_are_serialized():
     active = {"count": 0, "max": 0}
 

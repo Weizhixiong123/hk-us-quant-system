@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from quant.data.universe import SymbolInfo
 from quant.live.market_data import Bar
 from quant.live.runtime import (
     DryRunGateway,
@@ -48,7 +49,7 @@ class FakeMarketData:
     def __init__(self):
         self.bars = [
             Bar("AAPL", datetime(2026, 6, 23, 10, index, tzinfo=timezone.utc), 100, 101, 99, 100, index)
-            for index in range(26)
+            for index in range(30)
         ]
 
     def ingest_ticks(self, ticks):
@@ -121,6 +122,35 @@ def test_build_live_runtime_uses_settings_file(monkeypatch, tmp_path):
     assert runtime.scheduler.markets == ("US", "HK")
 
 
+def test_build_live_runtime_uses_saved_manual_intraday_universe(monkeypatch, tmp_path):
+    from quant.live.settings import save_live_settings
+
+    path = tmp_path / "live-settings.json"
+    save_live_settings(
+        {
+            "runtime": {"broker": "tiger"},
+            "tiger": {"markets": ["US"]},
+            "intraday_universe": {
+                "selection_mode": "manual",
+                "manual_symbols": [
+                    {"symbol": "TSLA", "name": "Tesla", "market": "US", "shortable": True}
+                ],
+            },
+        },
+        path,
+    )
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(path))
+    monkeypatch.setenv("LIVE_RUNTIME_DRY_RUN", "1")
+    monkeypatch.delenv("LIVE_RUNTIME_BROKER", raising=False)
+    monkeypatch.delenv("LIVE_RUNTIME_MARKETS", raising=False)
+
+    runtime = build_live_runtime_from_env(LiveGatewayState())
+
+    assert runtime.runtime_state.intraday_watchlist == ["TSLA"]
+    assert [item.symbol for item in runtime.data_provider.intraday_symbols] == ["TSLA"]
+    assert runtime._is_shortable("TSLA") is True
+
+
 def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):
     runtime, gateway = _runtime(tmp_path)
     at = datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc)
@@ -131,6 +161,29 @@ def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):
     assert gateway.subscribed == ["AAPL"]
     events = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")
     assert events[0].payload["symbols"] == ["AAPL"]
+
+
+def test_manual_intraday_universe_bypasses_premarket_screener(tmp_path):
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=DryRunGateway(live_state),
+        scheduler=LiveScheduler(markets=("US",)),
+        data_provider=FakeDataProvider(),
+        market_data=FakeMarketData(),
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+        manual_intraday_symbols=[SymbolInfo("TSLA", "Tesla", "US", shortable=True)],
+    )
+
+    runtime._run_intraday_premarket_scan(datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc))
+
+    assert runtime.runtime_state.intraday_watchlist == ["TSLA"]
+    assert runtime._is_shortable("TSLA") is True
+    event = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")[0]
+    assert event.payload["selection_mode"] == "manual"
+    assert event.payload["names"] == {"TSLA": "Tesla"}
 
 
 def test_runtime_catches_up_missed_us_premarket_scan(tmp_path):
@@ -316,15 +369,10 @@ def test_seed_history_seed_minute_bars_failure_does_not_abort_second(tmp_path):
     assert market_data.minute_bars("MSFT")
 
 
-def test_reverse_cross_long_detects_bearish_cross(tmp_path):
+def test_three_period_momentum_detects_falling(tmp_path):
     runtime, _gateway = _runtime(tmp_path)
-    # 构造一段先涨后急跌的 15m 收盘价，使 MACD 形成死叉
-    closes = (
-        [100] * 5 +
-        list(range(100, 140)) +       # 强势上涨
-        [140] * 10 +                  # 平台期
-        list(range(140, 138, -1))     # 小幅下跌
-    )[:49]
+    # 先涨后加速下跌 → 三周期最后一根柱均低于上一根
+    closes = list(range(1, 31)) + [30 - x * x * 0.3 for x in range(30)]
     bars = [
         Bar("AAPL", datetime(2026, 6, 24, 9, i, tzinfo=timezone.utc), c, c + 1, c - 1, c, 100)
         for i, c in enumerate(closes)
@@ -335,10 +383,10 @@ def test_reverse_cross_long_detects_bearish_cross(tmp_path):
             return bars
 
     runtime.market_data = _MD()
-    assert runtime._reverse_cross("AAPL", "long") is True
+    assert runtime._three_period_momentum("AAPL") == "falling"
 
 
-def test_reverse_cross_insufficient_bars_is_false(tmp_path):
+def test_three_period_momentum_insufficient_bars_is_mixed(tmp_path):
     runtime, _gateway = _runtime(tmp_path)
 
     class _MD:
@@ -346,7 +394,7 @@ def test_reverse_cross_insufficient_bars_is_false(tmp_path):
             return []
 
     runtime.market_data = _MD()
-    assert runtime._reverse_cross("AAPL", "long") is False
+    assert runtime._three_period_momentum("AAPL") == "mixed"
 
 
 def test_intraday_short_entry_for_shortable_symbol(tmp_path, monkeypatch):
@@ -355,12 +403,10 @@ def test_intraday_short_entry_for_shortable_symbol(tmp_path, monkeypatch):
     runtime, gateway = _runtime(tmp_path)
     runtime.runtime_state.intraday_watchlist = ["AAPL"]  # universe 中 AAPL shortable=True
 
-    def fake_signal(**kwargs):
-        if kwargs.get("side") == "short":
-            return SimpleNamespace(action="enter_short")
-        return SimpleNamespace(action="wait")
-
-    monkeypatch.setattr("quant.live.runtime.evaluate_intraday_entry_signal", fake_signal)
+    monkeypatch.setattr(
+        "quant.live.runtime.evaluate_intraday_entry_signal",
+        lambda **kwargs: SimpleNamespace(action="enter_short", side="short"),
+    )
 
     runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))
     snapshot = runtime.live_state.snapshot()
@@ -377,7 +423,7 @@ def test_intraday_short_blocked_for_non_shortable(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "quant.live.runtime.evaluate_intraday_entry_signal",
-        lambda **kwargs: SimpleNamespace(action="enter_short") if kwargs.get("side") == "short" else SimpleNamespace(action="wait"),
+        lambda **kwargs: SimpleNamespace(action="enter_short", side="short"),
     )
 
     runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))

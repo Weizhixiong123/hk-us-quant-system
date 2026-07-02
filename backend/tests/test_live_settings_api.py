@@ -1,5 +1,3 @@
-from fastapi import HTTPException
-
 from app.api.routes import live_settings, update_live_settings
 from app.models.schemas import LiveSettingsUpdate
 
@@ -27,18 +25,73 @@ def test_live_settings_api_saves_and_redacts_private_key(monkeypatch, tmp_path):
     assert live_settings()["tiger"]["private_key_configured"] is True
 
 
-def test_live_settings_api_rejects_live_without_confirmation(monkeypatch, tmp_path):
+def test_live_settings_api_accepts_live_without_confirmation(monkeypatch, tmp_path):
     monkeypatch.setenv("LIVE_SETTINGS_PATH", str(tmp_path / "live-settings.json"))
     payload = LiveSettingsUpdate.model_validate(
         {"tiger": {"environment": "live", "live_trading_confirmed": False}}
     )
 
-    try:
-        update_live_settings(payload)
-    except HTTPException as exc:
-        assert exc.status_code == 400
-    else:
-        raise AssertionError("expected route to reject live without confirmation")
+    response = update_live_settings(payload)
+
+    assert response["tiger"]["environment"] == "live"
+
+
+def test_live_settings_api_round_trips_broker_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(tmp_path / "live-settings.json"))
+    payload = LiveSettingsUpdate.model_validate(
+        {
+            "runtime": {"broker": "futu", "enabled": True, "dry_run": False},
+            "futu": {
+                "host": "192.168.1.20",
+                "port": 22222,
+                "trd_env": "REAL",
+                "market": "HK",
+                "markets": ["HK", "US"],
+            },
+            "tiger": {
+                "tiger_id": "tid",
+                "account": "account",
+                "private_key_path": "C:/keys/tiger.pem",
+                "tiger_public_key_path": "C:/keys/tiger.pub",
+                "environment": "live",
+                "language": "zh_CN",
+                "max_contracts": 50,
+                "market": "US",
+                "markets": ["US"],
+            },
+        }
+    )
+
+    update_live_settings(payload)
+    response = live_settings()
+
+    assert response["futu"]["host"] == "192.168.1.20"
+    assert response["futu"]["port"] == 22222
+    assert response["futu"]["trd_env"] == "REAL"
+    assert response["futu"]["markets"] == ["HK", "US"]
+    assert response["tiger"]["tiger_id"] == "tid"
+    assert response["tiger"]["account"] == "account"
+    assert response["tiger"]["private_key_path"] == "C:/keys/tiger.pem"
+    assert response["tiger"]["tiger_public_key_path"] == "C:/keys/tiger.pub"
+
+
+def test_live_settings_api_round_trips_manual_intraday_universe(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(tmp_path / "live-settings.json"))
+    payload = LiveSettingsUpdate.model_validate(
+        {
+            "intraday_universe": {
+                "selection_mode": "manual",
+                "manual_symbols": [
+                    {"symbol": "tsla", "name": "Tesla", "market": "US", "shortable": True}
+                ],
+            }
+        }
+    )
+
+    response = update_live_settings(payload)
+
+    assert response["intraday_universe"]["selection_mode"] == "manual"
+    assert response["intraday_universe"]["manual_symbols"][0]["symbol"] == "TSLA"
 
 
 def test_runtime_reload_returns_running_state(monkeypatch, tmp_path):

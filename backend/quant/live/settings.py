@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +42,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "safety": {
         "operator_note": "",
     },
+    "intraday_universe": {
+        "selection_mode": "auto",
+        "manual_symbols": [],
+    },
 }
+
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,23}$")
 
 
 def default_settings_path() -> Path:
@@ -147,7 +154,56 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     safety.pop("pause_new_orders", None)
     safety.pop("close_only", None)
     safety["operator_note"] = str(safety.get("operator_note", ""))
+
+    intraday_universe = settings.setdefault("intraday_universe", {})
+    intraday_universe["selection_mode"] = str(
+        intraday_universe.get("selection_mode", "auto")
+    ).lower()
+    intraday_universe["manual_symbols"] = _normalize_manual_symbols(
+        intraday_universe.get("manual_symbols")
+    )
     return settings
+
+
+def _normalize_manual_symbols(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    symbols: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        market = str(item.get("market", "")).strip().upper()
+        symbol = _normalize_symbol(str(item.get("symbol", "")), market)
+        key = (market, symbol)
+        if market not in {"HK", "US"} or not _SYMBOL_PATTERN.fullmatch(symbol) or key in seen:
+            continue
+        seen.add(key)
+        symbols.append(
+            {
+                "symbol": symbol,
+                "name": str(item.get("name", "")).strip() or symbol,
+                "market": market,
+                "shortable": bool(item.get("shortable", False)),
+            }
+        )
+    return symbols
+
+
+def _normalize_symbol(value: str, market: str) -> str:
+    symbol = value.strip().upper().replace(" ", "")
+    if market == "HK":
+        if symbol.startswith("HK."):
+            symbol = symbol[3:]
+        if symbol.endswith(".HK"):
+            symbol = symbol[:-3]
+        if symbol.isdigit():
+            symbol = (symbol.lstrip("0") or "0").zfill(4)
+        return f"{symbol}.HK" if symbol else ""
+    if market == "US" and symbol.endswith(".US"):
+        return symbol[:-3]
+    return symbol
 
 
 def _normalize_markets(value: Any, fallback: Any) -> list[str]:
@@ -174,13 +230,15 @@ def _validate(settings: Mapping[str, Any]) -> None:
         raise ValueError("futu.trd_env must be SIMULATE or REAL")
     if not set(futu["markets"]).issubset({"HK", "US"}):
         raise ValueError("futu.markets must contain HK or US")
-    if futu["trd_env"] == "REAL" and not futu["real_trading_confirmed"]:
-        raise ValueError("futu REAL mode requires real trading confirmation")
-
     tiger = settings["tiger"]
     if tiger["environment"] not in {"sandbox", "live"}:
         raise ValueError("tiger.environment must be sandbox or live")
     if not set(tiger["markets"]).issubset({"HK", "US"}):
         raise ValueError("tiger.markets must contain HK or US")
-    if tiger["environment"] == "live" and not tiger["live_trading_confirmed"]:
-        raise ValueError("tiger live mode requires live trading confirmation")
+
+    intraday_universe = settings["intraday_universe"]
+    if intraday_universe["selection_mode"] not in {"auto", "manual"}:
+        raise ValueError("intraday_universe.selection_mode must be auto or manual")
+    for item in intraday_universe["manual_symbols"]:
+        if item["market"] not in {"HK", "US"} or not _SYMBOL_PATTERN.fullmatch(item["symbol"]):
+            raise ValueError("manual symbol is invalid")

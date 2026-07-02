@@ -12,8 +12,23 @@ import type {
   DashboardSnapshot,
   Market,
   ParamValue,
-  StrategyConfig
+  StrategyConfig,
+  WatchSymbol
 } from "../api/types";
+import { lookupSymbolName } from "../utils/symbolLookup";
+
+/**
+ * 有些后端推送来的 watchlist/positions 行 name 字段为空或等于 symbol(旧数据),
+ * 在前端用静态映射补一次,这样 UI 里就不会出现「代码 == 名称」的占位显示。
+ * 仅当 name 缺失 / 等于 symbol 时覆盖,避免覆盖券商已经正常返回的中文名。
+ */
+function backfillName<T extends { symbol: string; name: string; market: Market }>(row: T): T {
+  const trimmed = (row.name ?? "").trim();
+  const needsLookup = trimmed === "" || trimmed === row.symbol;
+  if (!needsLookup) return row;
+  const name = lookupSymbolName(row.symbol, row.market);
+  return name ? { ...row, name } : row;
+}
 
 export function useDashboard() {
   const dashboard = ref<DashboardSnapshot | null>(null);
@@ -27,8 +42,10 @@ export function useDashboard() {
   const account = computed(() => dashboard.value?.account ?? null);
   const strategies = computed(() => dashboard.value?.strategies ?? []);
   const risk = computed(() => dashboard.value?.risk ?? []);
-  const positions = computed(() => dashboard.value?.positions ?? []);
-  const watchlist = computed(() => dashboard.value?.watchlist ?? []);
+  const positions = computed(() => (dashboard.value?.positions ?? []).map(backfillName));
+  const watchlist = computed(
+    () => (dashboard.value?.watchlist ?? []).map((row) => backfillName(row as WatchSymbol)) as WatchSymbol[]
+  );
   const signals = computed(() => dashboard.value?.signals ?? []);
   const orders = computed(() => dashboard.value?.orders ?? []);
   const trades = computed(() => dashboard.value?.trades ?? []);

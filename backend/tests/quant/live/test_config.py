@@ -24,11 +24,13 @@ def test_defaults(monkeypatch):
     assert cfg.real_trading_confirmed is False
 
 
-def test_real_env_requires_explicit_confirmation(monkeypatch):
+def test_real_env_does_not_require_confirmation(monkeypatch):
     monkeypatch.setenv("FUTU_TRD_ENV", "REAL")
     monkeypatch.delenv("FUTU_REAL_TRADING_CONFIRM", raising=False)
-    with pytest.raises(ValueError, match="FUTU_REAL_TRADING_CONFIRM"):
-        load_futu_config()
+    cfg = load_futu_config()
+
+    assert cfg.trd_env == "REAL"
+    assert cfg.real_trading_confirmed is False
 
 
 def test_real_env_override_with_confirmation(monkeypatch):
@@ -86,12 +88,14 @@ def test_futu_config_supports_multiple_markets_from_env(monkeypatch):
     assert cfg.markets == ("HK", "US")
 
 
-def test_tiger_live_env_requires_explicit_confirmation(monkeypatch):
+def test_tiger_live_env_does_not_require_confirmation(monkeypatch):
     monkeypatch.setenv("TIGER_ENVIRONMENT", "live")
     monkeypatch.delenv("TIGER_LIVE_TRADING_CONFIRM", raising=False)
 
-    with pytest.raises(ValueError, match="TIGER_LIVE_TRADING_CONFIRM"):
-        load_tiger_config()
+    cfg = load_tiger_config()
+
+    assert cfg.environment == "live"
+    assert cfg.live_trading_confirmed is False
 
 
 def test_tiger_live_env_override_with_confirmation(monkeypatch):

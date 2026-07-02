@@ -13,13 +13,16 @@ def test_scheduler_triggers_hk_premarket_scan():
     assert actions[0].strategy_id == "intraday_macd"
 
 
-def test_scheduler_triggers_5m_and_15m_intraday_signals():
+def test_scheduler_triggers_3m_intraday_signal():
     actions = build_due_actions(datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ), markets=("HK",))
 
-    assert [action.hook for action in actions] == [
-        "intraday_5m_signal",
-        "intraday_15m_signal",
-    ]
+    assert [action.hook for action in actions] == ["intraday_3m_signal"]
+
+
+def test_scheduler_skips_non_3m_boundary():
+    actions = build_due_actions(datetime(2026, 6, 23, 10, 16, tzinfo=HK_TZ), markets=("HK",))
+
+    assert actions == []
 
 
 def test_scheduler_skips_intraday_signals_during_hk_lunch_break():
@@ -28,15 +31,13 @@ def test_scheduler_skips_intraday_signals_during_hk_lunch_break():
     assert actions == []
 
 
-def test_scheduler_triggers_force_close_once():
+def test_scheduler_no_longer_emits_force_close():
     scheduler = LiveScheduler(markets=("HK",))
     at = datetime(2026, 6, 23, 15, 50, tzinfo=HK_TZ)
 
-    first = scheduler.due_actions(at)
-    second = scheduler.due_actions(at)
+    actions = scheduler.due_actions(at)
 
-    assert [action.hook for action in first] == ["intraday_force_close"]
-    assert second == []
+    assert actions == []
 
 
 def test_scheduler_triggers_month_end_scan_and_daily_review():

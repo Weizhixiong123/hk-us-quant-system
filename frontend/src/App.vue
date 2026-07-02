@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, type Component } from "vue";
+import { computed, onMounted, ref, watch, type Component } from "vue";
 import {
   Activity,
   Briefcase,
@@ -23,6 +23,7 @@ import {
   WalletCards
 } from "lucide-vue-next";
 import LiveSettingsPanel from "./components/LiveSettingsPanel.vue";
+import ManualUniversePanel from "./components/ManualUniversePanel.vue";
 import PositionManagement from "./components/PositionManagement.vue";
 import StrategyCard from "./components/StrategyCard.vue";
 import { fetchTradeHistory } from "./api/client";
@@ -50,6 +51,9 @@ interface QueryRow {
   score: number;
   updatedAt: string;
   starred: boolean;
+  scoreBreakdown: Record<string, number> | null;
+  freshness: number | null;
+  scoreTooltip: string;
 }
 
 interface ExecutionRow {
@@ -103,10 +107,12 @@ async function loadTradeHistory(): Promise<void> {
 }
 
 watch(activeView, (view) => {
-  if (view === "trades") {
+  if (view === "dashboard" || view === "trades") {
     loadTradeHistory();
   }
 });
+
+onMounted(loadTradeHistory);
 
 const navItems: NavItem[] = [
   { label: "控制台", icon: Home, view: "dashboard" },
@@ -170,7 +176,12 @@ const queriedStocks = computed<QueryRow[]>(() =>
   watchlist.value.map((item, index) => {
     const reason = item.tags.length > 0 ? item.tags.join(" / ") : "等待信号";
     const strategyTwo = isTrendCandidate(reason);
-    const status = resolveQueryStatus(reason, item.market);
+    const status = resolveQueryStatus(reason, item.market, item.triggered);
+    const bd = item.score_breakdown;
+    const fresh = item.freshness ?? 1;
+    const tooltip = bd
+      ? `consistency ${bd.consistency.toFixed(2)} · volume ${bd.volume_ratio.toFixed(2)} · atr ${bd.atr_quality.toFixed(2)} · trend ${bd.trend_filter.toFixed(2)} · liquidity ${bd.liquidity_rank.toFixed(2)}${bd.weighted !== undefined ? ` · 加权 ${bd.weighted.toFixed(2)}` : ""} · freshness ×${fresh.toFixed(2)}${item.shortable ? " · 可做空 +0.05" : ""}`
+      : `score ${item.score} (无明细,旧事件)`;
 
     return {
       symbol: item.symbol,
@@ -182,6 +193,9 @@ const queriedStocks = computed<QueryRow[]>(() =>
       statusLabel: queryStatusLabel(status),
       reason,
       score: Math.round(item.score * 100),
+      scoreBreakdown: bd,
+      freshness: item.freshness,
+      scoreTooltip: tooltip,
       updatedAt: time(item.updated_at),
       starred: index === 2
     };
@@ -222,8 +236,16 @@ const totalPositionValue = computed(() =>
 );
 
 const recentExecutions = computed<ExecutionRow[]>(() => {
-  if (trades.value.length > 0) {
-    return trades.value.slice(0, 4).map((trade) => ({
+  const recentTrades = new Map<string, Trade>();
+  [...trades.value, ...tradeHistory.value].forEach((trade) => {
+    recentTrades.set(trade.id, trade);
+  });
+  const sortedTrades = [...recentTrades.values()]
+    .sort((left, right) => Date.parse(right.traded_at) - Date.parse(left.traded_at))
+    .slice(0, 4);
+
+  if (sortedTrades.length > 0) {
+    return sortedTrades.map((trade) => ({
       id: trade.id,
       time: timeOnly(trade.traded_at),
       symbol: trade.symbol,
@@ -273,7 +295,10 @@ function isTrendCandidate(reason: string): boolean {
   return ["周线", "月线", "日线", "候选持仓", "中长线"].some((keyword) => reason.includes(keyword));
 }
 
-function resolveQueryStatus(reason: string, market: Market): QueryStatus {
+function resolveQueryStatus(reason: string, market: Market, triggered: boolean): QueryStatus {
+  if (triggered) {
+    return "triggered";
+  }
   if (!isMarketOpenNow(market)) {
     return "closed";
   }
@@ -609,6 +634,7 @@ function timeOnly(value?: string): string {
 
           <section class="ops-dashboard-grid">
             <div class="ops-main-column">
+              <ManualUniversePanel @saved="load" />
               <article class="query-panel">
               <header class="query-head">
                 <div>
@@ -671,7 +697,7 @@ function timeOnly(value?: string): string {
                       </td>
                       <td class="reason-cell">{{ item.reason }}</td>
                       <td>
-                        <div class="score-cell">
+                        <div class="score-cell" :title="item.scoreTooltip">
                           <strong>{{ item.score }}</strong>
                           <span class="score-track">
                             <i :style="{ width: `${item.score}%` }" />
@@ -738,7 +764,7 @@ function timeOnly(value?: string): string {
               <header class="summary-head clickable" @click="activeView = 'trades'">
                 <div>
                   <h3>最近成交</h3>
-                  <p>订单与成交回报</p>
+                  <p>成交回报，不等于当前持仓数</p>
                 </div>
                 <ChevronRight :size="17" />
               </header>

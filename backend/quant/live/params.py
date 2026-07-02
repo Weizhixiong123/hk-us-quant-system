@@ -12,6 +12,9 @@ class IntradayParams:
     position_fraction_pct: float = 10.0
     max_positions: int = 3
     max_daily_loss_pct: float = 3.0
+    # 新增:watchlist 评分参数
+    score_half_life_hours: float = 4.0    # freshness 半衰期
+    shortable_bonus_pts: float = 0.05    # shortable 标的 +0.05 flat bonus
 
 
 @dataclass(frozen=True)

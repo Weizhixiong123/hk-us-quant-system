@@ -4,7 +4,7 @@ import asyncio
 import os
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 from uuid import uuid4
 
 from quant.live.clock import Market, is_trading_day, market_time, premarket_scan_time
@@ -32,8 +32,29 @@ from quant.live.trend import (
     evaluate_trend_entry_signal,
     evaluate_trend_exit_signal,
 )
-from quant.indicators.macd import has_bearish_cross, has_bullish_cross, macd
-from quant.data.universe import all_symbols
+from quant.indicators.macd import macd
+from quant.data.universe import SymbolInfo, all_symbols
+from quant.screening.intraday_screener import IntradayCandidate
+
+
+def _candidate_components_for(
+    selected: list[str],
+    candidates: Sequence[IntradayCandidate],
+) -> dict[str, dict[str, float | None]]:
+    """把被选标的的盘前 IntradyCandidate 字段映射成 score_components 子集。
+
+    只取 runtime 这一刻**已知**的字段(prev_amplitude_pct / avg_turnover);
+    需要日线 / 分钟线的维度留给 state.py 读时填 None。
+    """
+    by_sym = {c.symbol: c for c in candidates}
+    out: dict[str, dict[str, float | None]] = {}
+    for sym in selected:
+        cand = by_sym.get(sym)
+        out[sym] = {
+            "prev_amplitude_pct": getattr(cand, "prev_amplitude_pct", None),
+            "avg_turnover": getattr(cand, "avg_turnover", None),
+        }
+    return out
 
 
 class RuntimeGateway(Protocol):
@@ -80,6 +101,7 @@ class LiveRuntime:
         config: RuntimeConfig | None = None,
         db_path: DbPath | None = None,
         params: LiveParams | None = None,
+        manual_intraday_symbols: Sequence[SymbolInfo] | None = None,
     ) -> None:
         self.live_state = live_state
         self.gateway = gateway
@@ -95,13 +117,32 @@ class LiveRuntime:
         self._seeded_day = None
         self._seeded_symbols: set[str] = set()
         self._premarket_catchups: set[tuple[Market, date]] = set()
-        self._shortable_symbols = {item.symbol.upper() for item in all_symbols() if item.shortable}
+        self._manual_intraday_symbols = (
+            tuple(manual_intraday_symbols) if manual_intraday_symbols is not None else None
+        )
+        if self._manual_intraday_symbols is not None:
+            self.runtime_state.intraday_watchlist = [item.symbol for item in self._manual_intraday_symbols]
+        configured_symbols = [
+            *getattr(self.data_provider, "symbols", ()),
+            *getattr(self.data_provider, "intraday_symbols", ()),
+            *(self._manual_intraday_symbols or ()),
+        ]
+        self._shortable_symbols = {
+            item.symbol.upper() for item in (configured_symbols or all_symbols()) if item.shortable
+        }
 
     async def start(self) -> None:
         if not self.config.enabled or self._running:
             return
         self.gateway.connect()
-        self.gateway.subscribe(self._subscription_symbols())
+        subscription_symbols = self._subscription_symbols()
+        self.gateway.subscribe(subscription_symbols)
+        if self._manual_intraday_symbols is not None:
+            self._seed_history(subscription_symbols)
+            self._record_intraday_selection(
+                [item.symbol for item in self._manual_intraday_symbols],
+                datetime.now(timezone.utc),
+            )
         self.runtime_state.load_entry_dates_from_events(
             list_live_events(kind="trade", db_path=self.db_path)
         )
@@ -155,17 +196,21 @@ class LiveRuntime:
     def handle_action(self, action: SchedulerAction, at: datetime) -> None:
         if action.hook == "intraday_premarket_scan":
             self._run_intraday_premarket_scan(at)
-        elif action.hook == "intraday_15m_signal":
+        elif action.hook == "intraday_3m_signal":
             self._run_intraday_entries(action.market, at)
             self._run_intraday_exits(action.market, at)
-        elif action.hook == "intraday_force_close":
-            self._run_intraday_exits(action.market, at, force=True)
         elif action.hook == "portfolio_month_end_scan":
             self._run_portfolio_month_end_scan(at)
         elif action.hook == "portfolio_daily_review":
             self._run_portfolio_daily_review(action.market, at)
 
     def _run_intraday_premarket_scan(self, at: datetime) -> None:
+        if self._manual_intraday_symbols is not None:
+            symbols = [item.symbol for item in self._manual_intraday_symbols]
+            self.runtime_state.intraday_watchlist = symbols
+            self._record_intraday_selection(symbols, at)
+            return
+
         candidates = self.data_provider.intraday_candidates()
         symbols = build_premarket_watchlist(candidates)
         self.runtime_state.intraday_watchlist = symbols
@@ -176,7 +221,31 @@ class LiveRuntime:
             kind="selection",
             strategy_id="intraday_macd",
             created_at=at,
-            payload={"symbols": symbols, "candidate_count": len(candidates)},
+            payload={
+                "symbols": symbols,
+                "candidate_count": len(candidates),
+                "score_components": _candidate_components_for(symbols, candidates),
+            },
+            db_path=self.db_path,
+        )
+
+    def _record_intraday_selection(self, symbols: list[str], at: datetime) -> None:
+        names = {
+            item.symbol: item.name
+            for item in (self._manual_intraday_symbols or ())
+        }
+        record_live_event(
+            kind="selection",
+            strategy_id="intraday_macd",
+            created_at=at,
+            payload={
+                "symbols": symbols,
+                "candidate_count": len(symbols),
+                "selection_mode": "manual",
+                "names": names,
+                # manual 模式没有筛选过程,score_components 留空,
+                # state.py 读取时会全部走 0.5 fallback
+            },
             db_path=self.db_path,
         )
 
@@ -201,29 +270,23 @@ class LiveRuntime:
         for symbol in self.runtime_state.intraday_watchlist:
             if _market_from_symbol(symbol) != market or _has_position(snapshot, symbol):
                 continue
+            bars3 = self.market_data.interval_bars(symbol, 3, limit=80)
             bars5 = self.market_data.interval_bars(symbol, 5, limit=80)
             bars15 = self.market_data.interval_bars(symbol, 15, limit=80)
-            if len(bars5) < 26 or len(bars15) < 26:
+            if len(bars3) < 27 or len(bars5) < 27 or len(bars15) < 27:
                 continue
             price = self.market_data.latest_price(symbol) or bars5[-1].close
-            closes15 = [bar.close for bar in bars15]
-            def _entry(side: str):
-                return evaluate_intraday_entry_signal(
-                    symbol=symbol, market=market, at=at,
-                    closes_15m=closes15, lows_15m=[bar.low for bar in bars15],
-                    highs_15m=[bar.high for bar in bars15], closes_5m=[bar.close for bar in bars5],
-                    current_price=price, ma5_15m=sum(closes15[-5:]) / 5, side=side,
-                    shortable=self._is_shortable(symbol),
-                )
-
-            signal = _entry("long")
-            is_short = False
-            if signal.action != "enter_long" and self._is_shortable(symbol):
-                short_signal = _entry("short")
-                if short_signal.action == "enter_short":
-                    signal, is_short = short_signal, True
+            signal = evaluate_intraday_entry_signal(
+                symbol=symbol,
+                market=market,
+                at=at,
+                closes_15m=[bar.close for bar in bars15],
+                closes_5m=[bar.close for bar in bars5],
+                closes_3m=[bar.close for bar in bars3],
+            )
             if signal.action not in ("enter_long", "enter_short"):
                 continue
+            is_short = signal.action == "enter_short"
             risk = self._live_risk(symbol, market, "open", at, is_short=is_short)
             if not risk.allowed:
                 self._record_signal("intraday_macd", symbol, risk.reasons, at)
@@ -233,6 +296,7 @@ class LiveRuntime:
                 gateway=self.gateway, symbol=symbol, price=price,
                 total_equity=equity,
                 current_symbols=_current_symbols(snapshot),
+                intraday_symbols=tuple(self.runtime_state.intraday_open_symbols),
                 stopped_symbols_today=tuple(self.runtime_state.stopped_symbols_today),
                 daily_loss_pct=self.runtime_state.daily_loss_pct(equity),
                 pdt_trades_remaining=self.runtime_state.pdt_remaining(at.date()) if market == "US" else None,
@@ -247,7 +311,7 @@ class LiveRuntime:
                 self.runtime_state.mark_intraday_open(symbol)
             self._record_signal("intraday_macd", symbol, result.reasons, at, submitted=result.submitted)
 
-    def _run_intraday_exits(self, market: Market, at: datetime, force: bool = False) -> None:
+    def _run_intraday_exits(self, market: Market, at: datetime) -> None:
         snapshot = self.live_state.snapshot()
         for position in snapshot.get("positions", []):
             if _market_from_symbol(position.symbol) != market:
@@ -261,23 +325,9 @@ class LiveRuntime:
                     side=_position_side(position.direction),
                     quantity=int(position.volume),
                     avg_price=float(position.price),
-                    first_take_profit_done=self.runtime_state.intraday_half_done(position.symbol),
                 ),
-                market=market,
-                at=at,
-                current_price=price,
-                reverse_cross=self._reverse_cross(position.symbol, _position_side(position.direction)),
-                stop_loss_pct=self.params.intraday.stop_loss_pct,
-                take_profit_1_pct=self.params.intraday.take_profit_1_pct,
-                take_profit_2_pct=self.params.intraday.take_profit_2_pct,
+                momentum=self._three_period_momentum(position.symbol),
             )
-            if force and signal.action == "wait":
-                signal = evaluate_intraday_exit_signal(
-                    IntradayPosition(position.symbol, _position_side(position.direction), int(position.volume), float(position.price)),
-                    market,
-                    at,
-                    price,
-                )
             if signal.action == "wait":
                 continue
             risk = self._live_risk(position.symbol, market, "close", at)
@@ -293,20 +343,23 @@ class LiveRuntime:
                 reason=signal.reasons[0],
             )
             self.runtime_state.record_order_result(result.submitted, result.reasons)
-            if result.submitted and signal.action == "exit_half":
-                self.runtime_state.mark_intraday_half_taken(position.symbol)
             if result.submitted and signal.action == "exit_all":
                 self.runtime_state.mark_intraday_closed(position.symbol)
-            if result.submitted and signal.stopped_today:
-                self.runtime_state.mark_stopped(position.symbol)
             self._record_signal("intraday_macd", position.symbol, result.reasons, at, submitted=result.submitted)
 
-    def _reverse_cross(self, symbol: str, side: str) -> bool:
-        bars15 = self.market_data.interval_bars(symbol, 15, limit=80)
-        points = macd([bar.close for bar in bars15])
-        if len(points) < 2:
-            return False
-        return has_bearish_cross(points) if side == "long" else has_bullish_cross(points)
+    def _three_period_momentum(self, symbol: str) -> str:
+        """三周期(15m/5m/3m)MACD 柱方向:全升 rising / 全降 falling / 否则 mixed。"""
+        directions = []
+        for interval in (15, 5, 3):
+            points = macd([bar.close for bar in self.market_data.interval_bars(symbol, interval, limit=80)])
+            if len(points) < 2:
+                return "mixed"
+            directions.append("rising" if points[-1].hist > points[-2].hist else "falling")
+        if all(d == "rising" for d in directions):
+            return "rising"
+        if all(d == "falling" for d in directions):
+            return "falling"
+        return "mixed"
 
     def _run_portfolio_month_end_scan(self, at: datetime) -> None:
         rows = self.data_provider.portfolio_rows()
@@ -424,6 +477,8 @@ class LiveRuntime:
         return symbol.upper() in self._shortable_symbols
 
     def _subscription_symbols(self) -> list[str]:
+        if self._manual_intraday_symbols is not None:
+            return [item.symbol for item in self._manual_intraday_symbols]
         symbols = list({
             *(self.runtime_state.intraday_watchlist or []),
             *(self.runtime_state.portfolio_watchlist or []),
@@ -456,14 +511,50 @@ class LiveRuntime:
         at: datetime,
         submitted: bool = False,
     ) -> None:
+        components = self._build_signal_score_components(strategy_id, symbol)
+        payload: dict[str, Any] = {
+            "submitted": submitted,
+            "reasons": list(reasons),
+        }
+        if components:
+            payload["score_components"] = components
         record_live_event(
             kind="signal",
             strategy_id=strategy_id,
             symbol=symbol,
             created_at=at,
-            payload={"submitted": submitted, "reasons": list(reasons)},
+            payload=payload,
             db_path=self.db_path,
         )
+
+    def _build_signal_score_components(
+        self, strategy_id: str, symbol: str
+    ) -> dict[str, float | None]:
+        """signal 路径下计算 consistency(3 周期 MACD 一致度)。
+
+        仅在 BarAggregator 累积了 ≥27 根 close 的情况下重算;否则留空,
+        让 state.py 用 1.0 默认值(信号触发即视为当时满足一致性)。
+        """
+        if strategy_id != "intraday_macd":
+            return {}
+        try:
+            from app.strategies.macd_intraday import build_intraday_decision
+
+            bars15 = self.market_data.interval_bars(symbol, 15, limit=80)
+            bars5 = self.market_data.interval_bars(symbol, 5, limit=80)
+            bars3 = self.market_data.interval_bars(symbol, 3, limit=80)
+            if len(bars15) >= 27 and len(bars5) >= 27 and len(bars3) >= 27:
+                decision = build_intraday_decision(
+                    closes_15m=[b.close for b in bars15],
+                    closes_5m=[b.close for b in bars5],
+                    closes_3m=[b.close for b in bars3],
+                    side="long",
+                    within_trade_window=True,
+                )
+                return {"consistency": float(decision.confidence)}
+        except Exception:
+            return {}
+        return {}
 
     def _record_log(self, source: str, message: str) -> None:
         record_live_event(
@@ -591,7 +682,13 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
     market_data = BarAggregator()
     runtime_markets = _runtime_markets(all_settings, config.broker)
     symbols = [item for item in all_symbols() if item.market in runtime_markets]
-    data_provider = DefaultLiveDataProvider(market_data, symbols=symbols)
+    manual_symbols = _manual_intraday_symbols(all_settings, runtime_markets)
+    manual_mode = all_settings.get("intraday_universe", {}).get("selection_mode") == "manual"
+    data_provider = DefaultLiveDataProvider(
+        market_data,
+        symbols=symbols,
+        intraday_symbols=manual_symbols if manual_mode else symbols,
+    )
     gateway: RuntimeGateway
     if config.dry_run:
         gateway = DryRunGateway(live_state, initial_cash=config.default_equity)
@@ -612,6 +709,7 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
         config=config,
         params=params,
         db_path=live_db_path_for_mode(all_settings),
+        manual_intraday_symbols=manual_symbols if manual_mode else None,
     )
 
 
@@ -641,6 +739,23 @@ def _runtime_markets(settings: dict[str, Any], broker: str) -> tuple[Market, ...
         if market in {"HK", "US"} and market not in markets:
             markets.append(market)  # type: ignore[arg-type]
     return tuple(markets or ["HK"])  # type: ignore[return-value]
+
+
+def _manual_intraday_symbols(
+    settings: dict[str, Any],
+    runtime_markets: Sequence[Market],
+) -> list[SymbolInfo]:
+    rows = settings.get("intraday_universe", {}).get("manual_symbols", [])
+    return [
+        SymbolInfo(
+            symbol=str(item["symbol"]),
+            name=str(item.get("name") or item["symbol"]),
+            market=str(item["market"]),  # type: ignore[arg-type]
+            shortable=bool(item.get("shortable", False)),
+        )
+        for item in rows
+        if isinstance(item, dict) and item.get("market") in runtime_markets
+    ]
 
 
 def _account_equity(snapshot: dict[str, Any], default: float) -> float:

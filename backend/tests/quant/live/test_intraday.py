@@ -40,11 +40,12 @@ def test_premarket_watchlist_keeps_only_passed_candidates():
 
 
 def test_entry_signal_uses_trade_window_and_maps_long_action(monkeypatch):
-    calls = {}
+    calls = []
 
     def fake_decision(**kwargs):
-        calls.update(kwargs)
-        return SimpleNamespace(action="long", confidence=1.0, reasons=("全部条件通过",))
+        calls.append(kwargs)
+        action = "long" if kwargs["side"] == "long" else "wait"
+        return SimpleNamespace(action=action, confidence=1.0, reasons=("三周期柱同步抬高",))
 
     monkeypatch.setattr("quant.live.intraday.build_intraday_decision", fake_decision)
 
@@ -53,85 +54,71 @@ def test_entry_signal_uses_trade_window_and_maps_long_action(monkeypatch):
         market="HK",
         at=datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ),
         closes_15m=[1.0] * 30,
-        lows_15m=[1.0] * 30,
-        highs_15m=[1.0] * 30,
         closes_5m=[1.0] * 30,
-        current_price=100,
-        ma5_15m=99,
+        closes_3m=[1.0] * 30,
     )
 
-    assert calls["within_trade_window"] is True
+    assert calls[0]["within_trade_window"] is True
     assert signal.action == "enter_long"
     assert signal.side == "long"
 
 
-def test_exit_signal_stop_loss_exits_all_and_marks_stopped_today():
+def test_entry_signal_falls_back_to_short_when_long_waits(monkeypatch):
+    def fake_decision(**kwargs):
+        action = "short" if kwargs["side"] == "short" else "wait"
+        return SimpleNamespace(action=action, confidence=1.0, reasons=("三周期柱同步下降",))
+
+    monkeypatch.setattr("quant.live.intraday.build_intraday_decision", fake_decision)
+
+    signal = evaluate_intraday_entry_signal(
+        symbol="AAPL",
+        market="US",
+        at=datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ),
+        closes_15m=[1.0] * 30,
+        closes_5m=[1.0] * 30,
+        closes_3m=[1.0] * 30,
+    )
+
+    assert signal.action == "enter_short"
+    assert signal.side == "short"
+
+
+def test_exit_signal_long_exits_all_when_momentum_falling():
     signal = evaluate_intraday_exit_signal(
         position=IntradayPosition("AAPL", "long", 300, 100),
-        market="HK",
-        at=datetime(2026, 6, 23, 15, 50, tzinfo=HK_TZ),
-        current_price=98.4,
+        momentum="falling",
     )
 
     assert signal.action == "exit_all"
     assert signal.quantity == 300
-    assert signal.stopped_today is True
-    assert "止损" in signal.reasons[0]
+    assert "平多" in signal.reasons[0]
 
 
-def test_exit_signal_take_profit_second_level_exits_all():
+def test_exit_signal_short_exits_all_when_momentum_rising():
     signal = evaluate_intraday_exit_signal(
-        position=IntradayPosition("AAPL", "long", 300, 100),
-        market="HK",
-        at=datetime(2026, 6, 23, 10, 30, tzinfo=HK_TZ),
-        current_price=103.6,
+        position=IntradayPosition("AAPL", "short", 300, 100),
+        momentum="rising",
     )
 
     assert signal.action == "exit_all"
     assert signal.quantity == 300
-    assert "第二档止盈" in signal.reasons[0]
+    assert "平空" in signal.reasons[0]
 
 
-def test_exit_signal_reverse_cross_exits_all():
-    signal = evaluate_intraday_exit_signal(
+def test_exit_signal_waits_when_momentum_same_side():
+    long_wait = evaluate_intraday_exit_signal(
         position=IntradayPosition("AAPL", "long", 300, 100),
-        market="HK",
-        at=datetime(2026, 6, 23, 10, 30, tzinfo=HK_TZ),
-        current_price=101,
-        reverse_cross=True,
+        momentum="rising",
     )
-
-    assert signal.action == "exit_all"
-    assert "反向交叉" in signal.reasons[0]
-
-
-def test_exit_signal_force_close_exits_all_before_half_take_profit():
-    signal = evaluate_intraday_exit_signal(
+    short_wait = evaluate_intraday_exit_signal(
+        position=IntradayPosition("AAPL", "short", 300, 100),
+        momentum="falling",
+    )
+    mixed_wait = evaluate_intraday_exit_signal(
         position=IntradayPosition("AAPL", "long", 300, 100),
-        market="HK",
-        at=datetime(2026, 6, 23, 15, 50, tzinfo=HK_TZ),
-        current_price=102.2,
+        momentum="mixed",
     )
 
-    assert signal.action == "exit_all"
-    assert signal.quantity == 300
-    assert "强制清仓" in signal.reasons[0]
-
-
-def test_exit_signal_first_take_profit_exits_half_once():
-    first = evaluate_intraday_exit_signal(
-        position=IntradayPosition("AAPL", "long", 301, 100),
-        market="HK",
-        at=datetime(2026, 6, 23, 10, 30, tzinfo=HK_TZ),
-        current_price=102.1,
-    )
-    second = evaluate_intraday_exit_signal(
-        position=IntradayPosition("AAPL", "long", 151, 100, first_take_profit_done=True),
-        market="HK",
-        at=datetime(2026, 6, 23, 10, 35, tzinfo=HK_TZ),
-        current_price=102.1,
-    )
-
-    assert first.action == "exit_half"
-    assert first.quantity == 150
-    assert second.action == "wait"
+    assert long_wait.action == "wait"
+    assert short_wait.action == "wait"
+    assert mixed_wait.action == "wait"

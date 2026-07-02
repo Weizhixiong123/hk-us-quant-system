@@ -24,10 +24,80 @@ from app.models.schemas import (
     WatchSymbol,
 )
 from quant.data.universe import all_symbols
+from quant.indicators.scoring import ScoreInputs, score_for_symbol
 from quant.live.params import LiveParams
 from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
-from quant.live.store import list_live_events, live_db_path_for_mode
+from quant.live.store import LiveEvent, list_live_events, live_db_path_for_mode
+
+
+_SERVER_TZ = timezone(timedelta(hours=8))
+
+
+def _score_inputs_for_selection(
+    event: LiveEvent,
+    symbol: str,
+    market: str,
+    now: datetime,
+) -> ScoreInputs:
+    """从 selection event payload 提取 ScoreInputs。缺字段 → None → 0.5 fallback。"""
+    payload = event.payload or {}
+    comp = (payload.get("score_components") or {}).get(symbol) or {}
+    age_hours: float | None = None
+    if event.created_at is not None:
+        delta = (now - event.created_at).total_seconds() / 3600.0
+        age_hours = max(delta, 0.0)
+    return ScoreInputs(
+        symbol=symbol,
+        market=market,
+        consistency=comp.get("consistency"),
+        daily_volume_ratio=comp.get("daily_volume_ratio"),
+        intraday_volume_ratio=comp.get("intraday_volume_ratio"),
+        prev_amplitude_pct=comp.get("prev_amplitude_pct"),
+        price_vs_ma20_pct=comp.get("price_vs_ma20_pct"),
+        price_vs_ma30_pct=comp.get("price_vs_ma30_pct"),
+        short_term_gain_pct=comp.get("short_term_gain_pct"),
+        avg_turnover=comp.get("avg_turnover"),
+        selection_age_hours=age_hours,
+    )
+
+
+def _score_inputs_for_signal(event: LiveEvent, now: datetime) -> ScoreInputs:
+    """signal event:consistency 默认 1.0(已触发信号 = 当时 3 周期 MACD 一致)。"""
+    payload = event.payload or {}
+    comp = payload.get("score_components") or {}
+    age_hours: float | None = None
+    if event.created_at is not None:
+        delta = (now - event.created_at).total_seconds() / 3600.0
+        age_hours = max(delta, 0.0)
+    return ScoreInputs(
+        symbol=event.symbol or "",
+        market=_market_from_symbol(event.symbol or ""),
+        consistency=comp.get("consistency", 1.0),
+        daily_volume_ratio=comp.get("daily_volume_ratio"),
+        intraday_volume_ratio=comp.get("intraday_volume_ratio"),
+        prev_amplitude_pct=comp.get("prev_amplitude_pct"),
+        price_vs_ma20_pct=comp.get("price_vs_ma20_pct"),
+        price_vs_ma30_pct=comp.get("price_vs_ma30_pct"),
+        short_term_gain_pct=comp.get("short_term_gain_pct"),
+        avg_turnover=comp.get("avg_turnover"),
+        selection_age_hours=age_hours,
+    )
+
+
+def _is_shortable(symbol: str) -> bool:
+    """从 manual universe 配置里查 shortable 标记。symbol 不在 manual 里 → False。"""
+    try:
+        settings = load_live_settings()
+    except Exception:
+        return False
+    universe = settings.get("intraday_universe", {}) or {}
+    for item in universe.get("manual_symbols", []) or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("symbol", "")).upper() == symbol.upper():
+            return bool(item.get("shortable", False))
+    return False
 
 
 class AppState:
@@ -289,17 +359,17 @@ class AppState:
     def dashboard(self) -> DashboardSnapshot:
         with self._lock:
             live_snapshot = self._live_snapshot()
-            has_live_account = bool(live_snapshot and live_snapshot.get("account"))
+            uses_live_state = self.live_state is not None
             positions = self._live_positions(live_snapshot)
             orders = self._live_orders(live_snapshot)
             trades = self._live_trades(live_snapshot)
-            if not has_live_account:
-                # 仅在未接网关(纯前端演示)时回落到 seed 演示数据
+            if not uses_live_state:
+                # 只有显式创建纯演示 AppState 时才使用 seed 数据。
                 positions = positions or self.positions
                 orders = orders or self.orders
                 trades = trades or self.trades
-            watchlist = self._live_watchlist() if has_live_account else self.watchlist
-            signals = self._live_signals() if has_live_account else self.signals
+            watchlist = self._live_watchlist() if uses_live_state else self.watchlist
+            signals = self._live_signals() if uses_live_state else self.signals
             return DashboardSnapshot(
                 server_time=self._now(),
                 account=self._dashboard_account(live_snapshot),
@@ -316,9 +386,12 @@ class AppState:
 
     def risk_status(self, live_snapshot: dict | None = None) -> list[RiskRuleStatus]:
         live_snapshot = live_snapshot if live_snapshot is not None else self._live_snapshot()
-        has_live_account = bool(live_snapshot and live_snapshot.get("account"))
-        if has_live_account:
-            intraday_positions = len(self._live_positions(live_snapshot))
+        if self.live_state is not None:
+            intraday_positions = sum(
+                1
+                for position in self._live_positions(live_snapshot)
+                if position.strategy_id == "intraday_macd"
+            )
         else:
             intraday_positions = sum(
                 1 for position in self.positions if position.strategy_id == "intraday_macd"
@@ -373,15 +446,15 @@ class AppState:
 
     def current_positions(self) -> list[Position]:
         live_positions = self._live_positions(self._live_snapshot())
-        return live_positions or self.positions
+        return live_positions if self.live_state is not None else self.positions
 
     def current_orders(self) -> list[Order]:
         live_orders = self._live_orders(self._live_snapshot())
-        return live_orders or self.orders
+        return live_orders if self.live_state is not None else self.orders
 
     def current_trades(self) -> list[Trade]:
         live_trades = self._live_trades(self._live_snapshot())
-        return live_trades or self.trades
+        return live_trades if self.live_state is not None else self.trades
 
     def current_logs(self) -> list[TradeLog]:
         live_snapshot = self._live_snapshot()
@@ -481,9 +554,8 @@ class AppState:
 
     def tick(self) -> DashboardSnapshot:
         with self._lock:
-            snapshot = self._live_snapshot()
-            if snapshot and snapshot.get("account"):
-                # 已接网关：返回真实快照，不做随机演示漂移
+            if self.live_state is not None:
+                # 已配置运行态：返回真实快照，不做随机演示漂移。
                 return self.dashboard()
             drift = self._rng.uniform(-0.25, 0.3)
             self.account.day_pnl = round(self.account.day_pnl + drift * 620, 2)
@@ -645,6 +717,7 @@ class AppState:
         if not snapshot:
             return []
         ticks = {tick.symbol: tick for tick in snapshot.get("ticks", [])}
+        strategy_by_symbol = self._strategy_by_symbol()
         positions: list[Position] = []
         for item in snapshot.get("positions", []):
             quantity = int(item.volume)
@@ -660,7 +733,7 @@ class AppState:
                     symbol=item.symbol,
                     name=item.symbol,
                     market=_market_from_symbol(item.symbol),
-                    strategy_id="live",
+                    strategy_id=strategy_by_symbol.get(_symbol_key(item.symbol), "live"),
                     side=_side_from_direction(item.direction),
                     quantity=quantity,
                     avg_price=avg_price,
@@ -742,50 +815,139 @@ class AppState:
         return trades
 
     def _live_watchlist(self) -> list[WatchSymbol]:
-        names = {info.symbol: info.name for info in all_symbols()}
+        names = {_symbol_key(info.symbol): info.name for info in all_symbols()}
+        selection_events = list_live_events(kind="selection", limit=100, db_path=self._current_db_path())
+        current_intraday_mode = str(
+            load_live_settings().get("intraday_universe", {}).get("selection_mode", "auto")
+        )
+        latest_selections = {}
+        for event in selection_events:
+            if event.strategy_id not in latest_selections:
+                latest_selections[event.strategy_id] = event
+        active_selections = [
+            event
+            for event in latest_selections.values()
+            if event.strategy_id != "intraday_macd"
+            or str((event.payload or {}).get("selection_mode", "auto")) == current_intraday_mode
+        ]
+        active_keys = {
+            _symbol_key(str(symbol))
+            for event in active_selections
+            for symbol in (event.payload or {}).get("symbols", [])
+        }
+        for event in active_selections:
+            event_names = (event.payload or {}).get("names", {})
+            if isinstance(event_names, dict):
+                names.update({_symbol_key(str(symbol)): str(name) for symbol, name in event_names.items()})
         rows: list[WatchSymbol] = []
         seen: set[str] = set()
-        for event in list_live_events(kind="signal", db_path=self._current_db_path()):
-            symbol = event.symbol or ""
-            if not symbol or symbol in seen:
+        signal_events = list_live_events(kind="signal", limit=100, db_path=self._current_db_path())
+        latest_signals = {}
+        triggered_today: set[str] = set()
+        today = self._now().astimezone(_SERVER_TZ).date()
+        for event in signal_events:
+            if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
                 continue
-            seen.add(symbol)
+            symbol = event.symbol or ""
+            if not symbol:
+                continue
+            key = _symbol_key(symbol)
+            if selection_events and key not in active_keys:
+                continue
+            latest_signals.setdefault(key, event)
             payload = event.payload or {}
-            submitted = bool(payload.get("submitted", False))
+            event_day = event.created_at.astimezone(_SERVER_TZ).date()
+            if event_day == today and bool(payload.get("submitted", False)):
+                triggered_today.add(key)
+
+        for key, event in latest_signals.items():
+            symbol = event.symbol or ""
+            seen.add(key)
+            payload = event.payload or {}
+            bd = score_for_symbol(
+                _score_inputs_for_signal(event, self._now()),
+                half_life_hours=self.params.intraday.score_half_life_hours,
+                shortable=_is_shortable(symbol),
+                shortable_bonus_pts=self.params.intraday.shortable_bonus_pts,
+            )
             rows.append(
                 WatchSymbol(
                     symbol=symbol,
-                    name=names.get(symbol, symbol),
+                    name=names.get(key, symbol),
                     market=_market_from_symbol(symbol),
                     last_price=0.0,
                     change_pct=0.0,
                     turnover=0.0,
-                    score=0.85 if submitted else 0.6,
+                    score=bd.total,
                     tags=list(payload.get("reasons", [])),
                     updated_at=event.created_at,
+                    triggered=key in triggered_today,
+                    score_breakdown={
+                        "consistency": round(bd.consistency, 4),
+                        "volume_ratio": round(bd.volume_ratio, 4),
+                        "atr_quality": round(bd.atr_quality, 4),
+                        "trend_filter": round(bd.trend_filter, 4),
+                        "liquidity_rank": round(bd.liquidity_rank, 4),
+                        "weighted": round(bd.weighted, 4),
+                    },
+                    freshness=round(bd.freshness, 4),
+                    shortable=bd.shortable_bonus > 0,
                 )
             )
-        for event in list_live_events(kind="selection", db_path=self._current_db_path()):
+        for event in active_selections:
             payload = event.payload or {}
             for raw_symbol in payload.get("symbols", []):
                 symbol = str(raw_symbol)
-                if not symbol or symbol in seen:
+                key = _symbol_key(symbol)
+                if not symbol or key in seen:
                     continue
-                seen.add(symbol)
+                seen.add(key)
+                market = _market_from_symbol(symbol)
+                bd = score_for_symbol(
+                    _score_inputs_for_selection(event, symbol, market, self._now()),
+                    half_life_hours=self.params.intraday.score_half_life_hours,
+                    shortable=_is_shortable(symbol),
+                    shortable_bonus_pts=self.params.intraday.shortable_bonus_pts,
+                )
                 rows.append(
                     WatchSymbol(
                         symbol=symbol,
-                        name=names.get(symbol, symbol),
-                        market=_market_from_symbol(symbol),
+                        name=names.get(key, symbol),
+                        market=market,
                         last_price=0.0,
                         change_pct=0.0,
                         turnover=0.0,
-                        score=0.72,
-                        tags=_selection_tags(event.strategy_id),
+                        score=bd.total,
+                        tags=_selection_tags(
+                            event.strategy_id,
+                            str(payload.get("selection_mode", "auto")),
+                        ),
                         updated_at=event.created_at,
+                        triggered=False,
+                        score_breakdown={
+                            "consistency": round(bd.consistency, 4),
+                            "volume_ratio": round(bd.volume_ratio, 4),
+                            "atr_quality": round(bd.atr_quality, 4),
+                            "trend_filter": round(bd.trend_filter, 4),
+                            "liquidity_rank": round(bd.liquidity_rank, 4),
+                            "weighted": round(bd.weighted, 4),
+                        },
+                        freshness=round(bd.freshness, 4),
+                        shortable=bd.shortable_bonus > 0,
                     )
                 )
         return rows
+
+    def _strategy_by_symbol(self) -> dict[str, str]:
+        strategies: dict[str, str] = {}
+        for event in list_live_events(kind="signal", limit=100, db_path=self._current_db_path()):
+            payload = event.payload or {}
+            if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
+                continue
+            if not event.symbol or not bool(payload.get("submitted", False)):
+                continue
+            strategies.setdefault(_symbol_key(event.symbol), event.strategy_id)
+        return strategies
 
     def _live_signals(self) -> list[Signal]:
         events = list_live_events(kind="signal", db_path=self._current_db_path())
@@ -835,9 +997,24 @@ def _market_from_symbol(symbol: str) -> str:
     return "US"
 
 
-def _selection_tags(strategy_id: str) -> list[str]:
+def _symbol_key(symbol: str) -> str:
+    value = symbol.strip().upper()
+    for prefix in ("HK.", "US."):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+    for suffix in (".HK", ".US"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)]
+    if value.isdigit():
+        return value.lstrip("0") or "0"
+    return value
+
+
+def _selection_tags(strategy_id: str, selection_mode: str = "auto") -> list[str]:
     if strategy_id == "trend_portfolio":
         return ["月末选股", "候选持仓"]
+    if selection_mode == "manual":
+        return ["手动选股", "等待 MACD 开仓信号"]
     return ["盘前筛选", "等待 15m 收线确认"]
 
 

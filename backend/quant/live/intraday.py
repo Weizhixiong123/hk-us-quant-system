@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Literal, Sequence
 
 from app.strategies.macd_intraday import build_intraday_decision
-from quant.live.clock import Market, is_force_close_window, is_intraday_entry_window
+from quant.live.clock import Market, is_intraday_entry_window
 from quant.screening.intraday_screener import IntradayCandidate, screen_intraday
 
 
@@ -36,8 +36,6 @@ class IntradayExitSignal:
     action: IntradayAction
     symbol: str
     quantity: int
-    pnl_pct: float
-    stopped_today: bool
     reasons: tuple[str, ...]
 
 
@@ -54,91 +52,63 @@ def evaluate_intraday_entry_signal(
     market: Market,
     at: datetime,
     closes_15m: Sequence[float],
-    lows_15m: Sequence[float],
-    highs_15m: Sequence[float],
     closes_5m: Sequence[float],
-    current_price: float,
-    ma5_15m: float,
-    side: PositionSide = "long",
-    shortable: bool = True,
+    closes_3m: Sequence[float],
 ) -> IntradayEntrySignal:
-    decision = build_intraday_decision(
+    """三周期(15m/5m/3m)MACD 柱动量同步入场。
+
+    先判多(三周期柱同步抬高),不成立再判空(三周期柱同步下降)。
+    """
+    within_window = is_intraday_entry_window(at, market)
+    long_decision = build_intraday_decision(
         closes_15m=closes_15m,
-        lows_15m=lows_15m,
-        highs_15m=highs_15m,
         closes_5m=closes_5m,
-        current_price=current_price,
-        ma5_15m=ma5_15m,
-        side=side,
-        within_trade_window=is_intraday_entry_window(at, market),
-        shortable=shortable,
+        closes_3m=closes_3m,
+        side="long",
+        within_trade_window=within_window,
     )
-    if decision.action == "long":
-        return IntradayEntrySignal("enter_long", symbol, "long", decision.confidence, decision.reasons)
-    if decision.action == "short":
-        return IntradayEntrySignal("enter_short", symbol, "short", decision.confidence, decision.reasons)
-    return IntradayEntrySignal("wait", symbol, None, decision.confidence, decision.reasons)
+    if long_decision.action == "long":
+        return IntradayEntrySignal("enter_long", symbol, "long", long_decision.confidence, long_decision.reasons)
+
+    short_decision = build_intraday_decision(
+        closes_15m=closes_15m,
+        closes_5m=closes_5m,
+        closes_3m=closes_3m,
+        side="short",
+        within_trade_window=within_window,
+    )
+    if short_decision.action == "short":
+        return IntradayEntrySignal("enter_short", symbol, "short", short_decision.confidence, short_decision.reasons)
+
+    return IntradayEntrySignal("wait", symbol, None, long_decision.confidence, long_decision.reasons)
 
 
 def evaluate_intraday_exit_signal(
     position: IntradayPosition,
-    market: Market,
-    at: datetime,
-    current_price: float,
-    reverse_cross: bool = False,
-    stop_loss_pct: float = 1.5,
-    take_profit_1_pct: float = 2.0,
-    take_profit_2_pct: float = 3.5,
+    momentum: Literal["rising", "falling", "mixed"],
 ) -> IntradayExitSignal:
-    pnl_pct = _pnl_pct(position, current_price)
+    """三周期 MACD 柱同步反向 → 立即全平。
 
-    if pnl_pct <= -abs(stop_loss_pct):
-        return _exit_all(position, pnl_pct, True, "触发日内止损，平仓并记录当日禁开")
-    if pnl_pct >= take_profit_2_pct:
-        return _exit_all(position, pnl_pct, False, "触发第二档止盈，全部平仓")
-    if reverse_cross:
-        return _exit_all(position, pnl_pct, False, "MACD 反向交叉，全部平仓")
-    if is_force_close_window(at, market):
-        return _exit_all(position, pnl_pct, False, "收盘前 10 分钟强制清仓")
-    if pnl_pct >= take_profit_1_pct and not position.first_take_profit_done:
-        return IntradayExitSignal(
-            action="exit_half",
-            symbol=position.symbol,
-            quantity=max(1, position.quantity // 2),
-            pnl_pct=round(pnl_pct, 2),
-            stopped_today=False,
-            reasons=("触发第一档止盈，平半仓",),
-        )
+    - 持多 + 三周期柱同步下降 → 平多
+    - 持空 + 三周期柱同步抬高 → 平空
+    """
+    if position.side == "long" and momentum == "falling":
+        return _exit_all(position, "三周期 MACD 柱同步下降,平多")
+    if position.side == "short" and momentum == "rising":
+        return _exit_all(position, "三周期 MACD 柱同步抬高,平空")
 
     return IntradayExitSignal(
         action="wait",
         symbol=position.symbol,
         quantity=0,
-        pnl_pct=round(pnl_pct, 2),
-        stopped_today=False,
         reasons=("日内持仓继续观察",),
     )
 
 
-def _exit_all(
-    position: IntradayPosition,
-    pnl_pct: float,
-    stopped_today: bool,
-    reason: str,
-) -> IntradayExitSignal:
+def _exit_all(position: IntradayPosition, reason: str) -> IntradayExitSignal:
     return IntradayExitSignal(
         action="exit_all",
         symbol=position.symbol,
         quantity=position.quantity,
-        pnl_pct=round(pnl_pct, 2),
-        stopped_today=stopped_today,
         reasons=(reason,),
     )
-
-
-def _pnl_pct(position: IntradayPosition, current_price: float) -> float:
-    if position.avg_price <= 0:
-        return 0.0
-    if position.side == "long":
-        return (current_price - position.avg_price) / position.avg_price * 100
-    return (position.avg_price - current_price) / position.avg_price * 100

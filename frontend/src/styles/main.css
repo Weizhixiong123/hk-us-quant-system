@@ -771,7 +771,7 @@ meter {
 
 .settings-workspace {
   display: grid;
-  grid-template-columns: minmax(360px, 1fr) minmax(340px, 0.92fr) minmax(420px, 1.1fr);
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
   gap: 18px;
   align-items: start;
 }
@@ -1118,6 +1118,69 @@ meter {
   font-size: 14px;
 }
 
+.settings-apply-card {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(360px, auto) minmax(220px, 300px);
+  gap: 24px;
+  align-items: center;
+  padding: 20px 24px;
+  background:
+    linear-gradient(90deg, rgba(21, 155, 141, 0.08), transparent 42%),
+    rgba(255, 255, 255, 0.9);
+}
+
+.settings-apply-copy {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.settings-apply-copy h2 {
+  font-size: 19px;
+}
+
+.settings-apply-copy p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-apply-summary {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(94px, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(24, 32, 31, 0.1);
+  border-radius: 7px;
+  background: rgba(248, 250, 248, 0.78);
+}
+
+.settings-apply-summary span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  color: var(--ink);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-apply-summary span + span {
+  border-left: 1px solid rgba(24, 32, 31, 0.09);
+}
+
+.settings-apply-summary strong {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.settings-apply-card .save-button {
+  min-height: 50px;
+  font-size: 16px;
+}
+
 @media (max-width: 1320px) {
   .settings-overview,
   .settings-workspace {
@@ -1125,6 +1188,14 @@ meter {
   }
 
   .safety-card {
+    grid-column: 1 / -1;
+  }
+
+  .settings-apply-card {
+    grid-template-columns: minmax(240px, 1fr) minmax(320px, 1fr);
+  }
+
+  .settings-apply-card .save-button {
     grid-column: 1 / -1;
   }
 }
@@ -1140,6 +1211,15 @@ meter {
   }
 
   .safety-card {
+    grid-column: auto;
+  }
+
+  .settings-apply-card {
+    grid-column: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .settings-apply-card .save-button {
     grid-column: auto;
   }
 
@@ -1748,8 +1828,7 @@ html {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent-dark), var(--accent));
-}
+  background: linear-gradient(90deg, var(--accent-dark), var(--accent));}
 
 .query-foot {
   justify-content: space-between;
@@ -3091,3 +3170,8 @@ html {
   }
 }
 
+
+/* watchlist 评分单元:鼠标 hover 出 tooltip 时显示帮助光标 */
+.score-cell {
+  cursor: help;
+}

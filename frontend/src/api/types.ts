@@ -64,6 +64,11 @@ export interface WatchSymbol {
   score: number;
   tags: string[];
   updated_at: string;
+  triggered: boolean;
+  // 新增(后端 score_for_symbol 输出):五维明细 / freshness / shortable bonus
+  score_breakdown: Record<string, number> | null;
+  freshness: number | null;
+  shortable: boolean | null;
 }
 
 export interface Signal {
@@ -199,11 +204,24 @@ export interface LiveSafetySettings {
   operator_note: string;
 }
 
+export interface ManualSymbol {
+  symbol: string;
+  name: string;
+  market: Market;
+  shortable: boolean;
+}
+
+export interface IntradayUniverseSettings {
+  selection_mode: "auto" | "manual";
+  manual_symbols: ManualSymbol[];
+}
+
 export interface LiveSettingsSnapshot {
   runtime: LiveRuntimeSettings;
   futu: FutuLiveSettings;
   tiger: TigerLiveSettings;
   safety: LiveSafetySettings;
+  intraday_universe: IntradayUniverseSettings;
   saved_at: string;
   restart_required: boolean;
 }
@@ -216,6 +234,7 @@ export interface LiveSettingsUpdate {
     clear_private_key?: boolean;
   };
   safety?: Partial<LiveSafetySettings>;
+  intraday_universe?: IntradayUniverseSettings;
 }
 
 export interface RuntimeReloadResult {
