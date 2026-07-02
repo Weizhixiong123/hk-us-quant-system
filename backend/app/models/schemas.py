@@ -253,6 +253,12 @@ class ManualSymbol(BaseModel):
     shortable: bool = False
 
 
+class SymbolNameLookup(BaseModel):
+    symbol: str
+    market: Market
+    name: str | None = None
+
+
 class IntradayUniverseSettings(BaseModel):
     selection_mode: IntradaySelectionMode = "auto"
     manual_symbols: list[ManualSymbol] = Field(default_factory=list, max_length=100)

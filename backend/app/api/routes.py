@@ -17,11 +17,13 @@ from app.models.schemas import (
     StrategyConfig,
     StrategyParamsUpdate,
     StrategyToggleRequest,
+    SymbolNameLookup,
     Trade,
     TradeLog,
     WatchSymbol,
 )
 from app.services.state import AppState
+from quant.data.symbol_names import lookup_symbol_name
 from quant.live.settings import load_live_settings, public_live_settings, save_live_settings
 
 router = APIRouter()
@@ -55,6 +57,20 @@ def dashboard(request: Request) -> DashboardSnapshot:
 @router.get("/live-settings", response_model=LiveSettingsSnapshot)
 def live_settings() -> dict:
     return public_live_settings(load_live_settings())
+
+
+@router.get("/symbols/name", response_model=SymbolNameLookup)
+async def symbol_name(
+    symbol: str = Query(min_length=1, max_length=24),
+    market: str = Query(pattern="^(US|HK)$"),
+) -> dict[str, str | None]:
+    try:
+        normalized, name = await asyncio.to_thread(lookup_symbol_name, symbol, market)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="股票名称查询服务暂不可用") from exc
+    return {"symbol": normalized, "market": market, "name": name}
 
 
 @router.put("/live-settings", response_model=LiveSettingsSnapshot)

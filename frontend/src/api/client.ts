@@ -4,9 +4,11 @@ import type {
   DashboardSnapshot,
   LiveSettingsSnapshot,
   LiveSettingsUpdate,
+  Market,
   ParamValue,
   RuntimeReloadResult,
   StrategyConfig,
+  SymbolNameLookup,
   Trade
 } from "./types";
 
@@ -48,6 +50,11 @@ export function saveLiveSettings(payload: LiveSettingsUpdate): Promise<LiveSetti
 
 export function reloadRuntime(): Promise<RuntimeReloadResult> {
   return request<RuntimeReloadResult>("/runtime/reload", { method: "POST" });
+}
+
+export function fetchSymbolName(symbol: string, market: Market): Promise<SymbolNameLookup> {
+  const params = new URLSearchParams({ symbol, market });
+  return request<SymbolNameLookup>(`/symbols/name?${params}`);
 }
 
 export function toggleStrategy(strategyId: string, enabled: boolean): Promise<StrategyConfig> {

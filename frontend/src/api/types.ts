@@ -211,6 +211,12 @@ export interface ManualSymbol {
   shortable: boolean;
 }
 
+export interface SymbolNameLookup {
+  symbol: string;
+  market: Market;
+  name: string | null;
+}
+
 export interface IntradayUniverseSettings {
   selection_mode: "auto" | "manual";
   manual_symbols: ManualSymbol[];

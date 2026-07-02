@@ -1,14 +1,13 @@
 import type { Market } from "../api/types";
 
 /**
- * 静态标的 → 中文/英文名称映射。
- * 用于手动股票池「输入代码自动回填名称」。
+ * 常用标的 → 中文/英文名称本地映射。
+ * 用于手动股票池「输入代码自动回填名称」的快速路径。
  *
  * 设计原则:
- *  - 常用 US 蓝筹/ETF + HK 蓝筹/指数 列全,够 95% 的手动场景
+ *  - 常用 US 蓝筹/ETF + HK 蓝筹/指数优先本地命中
  *  - 代码用归一化 key(US:大写无后缀 / HK:5 位数字无后缀),与 ManualUniversePanel.normalizeSymbol 输出对齐
- *  - 查不到时返回 null,前端静默 fallback 到 symbol 本身
- *  - 后续若接入行情源(如 IB/Futu),把这里改成先查缓存 → 再查远端即可
+ *  - 查不到时返回 null,由调用方继续查询后端行情源
  */
 
 /** US 用大写字符串作为 key(避免数字被解析成八进制) */
@@ -30,6 +29,7 @@ const US_SYMBOLS: Record<string, string> = {
   AMD: "AMD",
   QCOM: "高通",
   AVGO: "博通",
+  ASML: "阿斯麦",
   MU: "美光",
   IBM: "IBM",
   CSCO: "思科",
@@ -202,7 +202,7 @@ export interface SymbolLookupResult {
 export function normalizeLookupKey(symbol: string, market: Market): string {
   const s = symbol.trim().toUpperCase().replace(/\s+/g, "");
   if (market === "US") {
-    return s.replace(/\.US$/, "");
+    return s.replace(/\.US$/, "").replace(/[.-]/g, "_");
   }
   // HK:0700 / 700 / 00700 / 0700.HK 全部归一化成 5 位零填充字符串
   // 关键:先把所有非数字字符剥掉(去掉 .HK / HK. 前缀),再 padStart(5)

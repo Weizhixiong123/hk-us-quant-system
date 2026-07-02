@@ -27,7 +27,7 @@ def live_db_path_for_mode(settings: Mapping[str, Any]) -> Path:
         else:
             env = str(settings.get("futu", {}).get("trd_env", "SIMULATE")).lower()
         tag = f"{broker}-{env}"
-    return DEFAULT_DB_PATH.parent / f"live-{tag}.sqlite3"
+    return _default_db_path().parent / f"live-{tag}.sqlite3"
 
 
 @dataclass(frozen=True)
@@ -131,11 +131,12 @@ def _resolve_db_path(db_path: DbPath | None) -> Path:
     if db_path is not None:
         return Path(db_path)
 
-    env_path = os.getenv("LIVE_DB_PATH")
-    if env_path:
-        return Path(env_path)
+    return _default_db_path()
 
-    return DEFAULT_DB_PATH
+
+def _default_db_path() -> Path:
+    env_path = os.getenv("LIVE_DB_PATH")
+    return Path(env_path) if env_path else DEFAULT_DB_PATH
 
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:

@@ -73,8 +73,30 @@ if (-not (Test-Path -LiteralPath (Join-Path $frontendDist "index.html"))) {
     throw "frontend/dist/index.html not found. Run frontend build first."
 }
 
-Write-Step "Cleaning previous package..."
-Remove-InRelease $packageRoot
+Write-Step "Refreshing package while preserving runtime data..."
+if (Test-Path -LiteralPath $packageRoot) {
+    $dataDir = Join-Path $packageRoot "data"
+    New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+
+    $legacyDataDir = Join-Path $packageRoot "backend\data"
+    if (Test-Path -LiteralPath $legacyDataDir) {
+        Get-ChildItem -LiteralPath $legacyDataDir -Filter "*.sqlite3" -File | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $dataDir -Force
+        }
+    }
+
+    @(
+        "backend",
+        "frontend",
+        "runtime",
+        "start.bat",
+        "stop.bat",
+        "repair-runtime.bat",
+        "README-local-deploy.md"
+    ) | ForEach-Object {
+        Remove-InRelease (Join-Path $packageRoot $_)
+    }
+}
 
 Write-Step "Creating package directories..."
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null

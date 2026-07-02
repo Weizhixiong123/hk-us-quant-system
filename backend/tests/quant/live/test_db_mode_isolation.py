@@ -32,6 +32,16 @@ def test_each_broker_mode_gets_distinct_db():
     }
 
 
+def test_live_db_env_keeps_mode_databases_in_persistent_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIVE_DB_PATH", str(tmp_path / "live.sqlite3"))
+
+    path = live_db_path_for_mode(
+        {"runtime": {"dry_run": False, "broker": "futu"}, "futu": {"trd_env": "SIMULATE"}}
+    )
+
+    assert path == tmp_path / "live-futu-simulate.sqlite3"
+
+
 def test_appstate_db_path_follows_current_mode(monkeypatch, tmp_path):
     import json
 

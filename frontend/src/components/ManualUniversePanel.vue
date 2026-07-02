@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { AlertTriangle, Check, Crosshair, Plus, RefreshCw, Trash2 } from "lucide-vue-next";
-import { fetchLiveSettings, reloadRuntime, saveLiveSettings } from "../api/client";
+import { fetchLiveSettings, fetchSymbolName, reloadRuntime, saveLiveSettings } from "../api/client";
 import type { IntradayUniverseSettings, ManualSymbol, Market } from "../api/types";
 import { lookupSymbolName } from "../utils/symbolLookup";
 
@@ -23,6 +23,9 @@ const message = ref("");
 const error = ref("");
 /** 用户是否手动改过 / 聚焦过 name 字段 —— 一旦是,自动回填就不再覆盖 */
 const nameTouched = ref(false);
+const resolvingName = ref(false);
+let nameLookupTimer: ReturnType<typeof setTimeout> | undefined;
+let nameLookupVersion = 0;
 
 const manualCountLabel = computed(() => `${universe.manual_symbols.length} 只标的`);
 
@@ -55,10 +58,21 @@ function setMode(mode: IntradayUniverseSettings["selection_mode"]): void {
   error.value = "";
 }
 
-function addSymbol(): void {
+async function resolveName(symbol: string, market: Market): Promise<string | null> {
+  const localName = lookupSymbolName(symbol, market);
+  if (localName) return localName;
+  try {
+    return (await fetchSymbolName(symbol, market)).name;
+  } catch {
+    return null;
+  }
+}
+
+async function addSymbol(): Promise<void> {
   message.value = "";
   error.value = "";
-  const symbol = normalizeSymbol(draft.symbol, draft.market);
+  const market = draft.market;
+  const symbol = normalizeSymbol(draft.symbol, market);
   if (!symbol) {
     error.value = "请输入有效股票代码";
     return;
@@ -67,15 +81,28 @@ function addSymbol(): void {
     error.value = `${symbol} 已在手动股票池中`;
     return;
   }
+  let name = draft.name.trim();
+  if (!name) {
+    resolvingName.value = true;
+    name = (await resolveName(symbol, market)) ?? "";
+    resolvingName.value = false;
+  }
+  if (!name) {
+    error.value = `未找到 ${symbol} 的股票名称，请检查代码或手工填写名称`;
+    return;
+  }
   universe.manual_symbols.push({
     symbol,
-    name: draft.name.trim() || symbol,
-    market: draft.market,
+    name,
+    market,
     shortable: draft.shortable
   });
+  nameLookupVersion += 1;
+  clearTimeout(nameLookupTimer);
   draft.symbol = "";
   draft.name = "";
   draft.shortable = false;
+  nameTouched.value = false;
 }
 
 function removeSymbol(index: number): void {
@@ -131,13 +158,16 @@ onMounted(loadUniverse);
 /**
  * 输入代码 + 选择市场 → 自动回填 name。
  * 设计:
- *  - 用归一化 key 查静态映射表(常见 US/HK 标的覆盖)
+ *  - 先查常用标的本地映射,未命中再查后端行情源
  *  - 用户尚未碰过 name 才回填;聚焦或手动改过就跳过
- *  - 查不到时静默不报错(name 留空,addSymbol 时会 fallback 到 symbol)
+ *  - 查不到时名称留空,加入股票池前要求检查代码或手工填写
  */
 watch(
   () => [draft.symbol, draft.market] as const,
   ([symbol, market]) => {
+    const version = ++nameLookupVersion;
+    clearTimeout(nameLookupTimer);
+    resolvingName.value = false;
     if (nameTouched.value) return;
     const trimmed = symbol.trim();
     if (!trimmed) {
@@ -145,7 +175,21 @@ watch(
       return;
     }
     const name = lookupSymbolName(trimmed, market);
-    draft.name = name ?? "";
+    if (name) {
+      draft.name = name;
+      return;
+    }
+    draft.name = "";
+    const normalized = normalizeSymbol(trimmed, market);
+    if (!normalized) return;
+    nameLookupTimer = setTimeout(async () => {
+      resolvingName.value = true;
+      const remoteName = await resolveName(normalized, market);
+      if (version !== nameLookupVersion) return;
+      resolvingName.value = false;
+      if (nameTouched.value) return;
+      draft.name = remoteName ?? "";
+    }, 300);
   }
 );
 
@@ -197,7 +241,7 @@ watch(
           <span>名称 <small>选填</small></span>
           <input
             v-model.trim="draft.name"
-            placeholder="Apple / 腾讯控股"
+            :placeholder="resolvingName ? '正在查询…' : 'Apple / 腾讯控股'"
             autocomplete="off"
             @focus="nameTouched = true"
             @input="nameTouched = true"
@@ -214,7 +258,7 @@ watch(
           <input v-model="draft.shortable" type="checkbox" />
           <span>允许做空</span>
         </label>
-        <button class="add-symbol" type="button" @click="addSymbol">
+        <button class="add-symbol" type="button" :disabled="resolvingName" @click="addSymbol">
           <Plus :size="18" />
           加入股票池
         </button>

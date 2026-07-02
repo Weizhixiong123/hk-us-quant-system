@@ -8,6 +8,7 @@ set "APP_PORT=8000"
 set "PYTHONPATH=%~dp0backend"
 set "FRONTEND_DIST_DIR=%~dp0frontend\dist"
 set "LIVE_SETTINGS_PATH=%~dp0data\live-settings.json"
+set "LIVE_DB_PATH=%~dp0data\live.sqlite3"
 
 if not exist "%~dp0data" mkdir "%~dp0data"
 if not exist "%~dp0logs" mkdir "%~dp0logs"
