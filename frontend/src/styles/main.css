@@ -1698,6 +1698,11 @@ html {
   border-radius: 8px;
 }
 
+.query-table-wrap.expanded {
+  max-height: 560px;
+  overflow-y: auto;
+}
+
 .query-table,
 .mini-table {
   min-width: 0;
@@ -1846,6 +1851,14 @@ html {
 
 .link-button {
   gap: 6px;
+}
+
+.link-button svg {
+  transition: transform 0.18s ease;
+}
+
+.link-button svg.expanded {
+  transform: rotate(90deg);
 }
 
 .ops-right-rail {
@@ -2245,6 +2258,21 @@ html {
   display: grid;
   gap: 18px;
   min-width: 0;
+}
+
+.candidates-view {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.candidates-view .query-panel {
+  margin: 0;
+}
+
+.candidates-view .query-table-wrap.expanded {
+  max-height: none;
+  overflow: visible;
 }
 
 .strategy-page-head {

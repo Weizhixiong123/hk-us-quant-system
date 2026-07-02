@@ -30,7 +30,7 @@ import { fetchTradeHistory } from "./api/client";
 import { useDashboard } from "./composables/useDashboard";
 import type { Market, RiskRuleStatus, Signal, Trade, TradeLog } from "./api/types";
 
-type ViewName = "dashboard" | "strategies" | "positions" | "trades" | "settings";
+type ViewName = "dashboard" | "strategies" | "candidates" | "positions" | "trades" | "settings";
 type QueryStatus = "triggered" | "selected" | "watching" | "pending" | "closed";
 
 interface NavItem {
@@ -118,7 +118,7 @@ const navItems: NavItem[] = [
   { label: "控制台", icon: Home, view: "dashboard" },
   { label: "实盘配置", icon: Settings2, view: "settings" },
   { label: "策略管理", icon: ClipboardList, view: "strategies" },
-  { label: "候选股票", icon: ListChecks },
+  { label: "候选股票", icon: ListChecks, view: "candidates" },
   { label: "持仓管理", icon: Package, view: "positions" },
   { label: "订单管理", icon: ReceiptText },
   { label: "成交记录", icon: Database, view: "trades" },
@@ -213,6 +213,7 @@ const queryTabDefs: { key: QueryTabKey; label: string; match: (item: QueryRow) =
 ];
 
 const activeQueryTab = ref<QueryTabKey>("all");
+const showAllQueriedStocks = ref(false);
 
 const queryTabs = computed(() =>
   queryTabDefs.map((def) => ({
@@ -227,7 +228,15 @@ const filteredQueriedStocks = computed(() => {
   return queriedStocks.value.filter(def.match);
 });
 
-const visibleQueriedStocks = computed(() => filteredQueriedStocks.value.slice(0, 6));
+const visibleQueriedStocks = computed(() =>
+  showAllQueriedStocks.value
+    ? filteredQueriedStocks.value
+    : filteredQueriedStocks.value.slice(0, 6)
+);
+
+watch(activeQueryTab, () => {
+  showAllQueriedStocks.value = false;
+});
 
 const activePositions = computed(() => positions.value.slice(0, 4));
 
@@ -277,6 +286,8 @@ const eventRows = computed<EventRow[]>(() => {
 const riskRows = computed(() => risk.value.slice(0, 5));
 
 const riskPassCount = computed(() => risk.value.filter((item) => item.status === "pass").length);
+
+const triggeredCount = computed(() => queriedStocks.value.filter((item) => item.status === "triggered").length);
 
 const maxDailyLossUsed = computed(() => {
   if (!account.value || account.value.max_daily_loss_pct <= 0) {
@@ -660,7 +671,7 @@ function timeOnly(value?: string): string {
                 </button>
               </div>
 
-              <div class="query-table-wrap">
+              <div class="query-table-wrap" :class="{ expanded: showAllQueriedStocks }">
                 <table class="query-table">
                   <thead>
                     <tr>
@@ -714,8 +725,12 @@ function timeOnly(value?: string): string {
               </div>
 
               <footer class="query-foot">
-                <button class="link-button" type="button">
-                  查看全部 {{ queriedStocks.length }} 只股票
+                <button
+                  class="link-button"
+                  type="button"
+                  @click="activeView = 'candidates'"
+                >
+                  查看全部 {{ filteredQueriedStocks.length }} 只股票
                   <ChevronRight :size="16" />
                 </button>
                 <span>闭市时保留最近一次筛选结果</span>
@@ -921,6 +936,100 @@ function timeOnly(value?: string): string {
               @backtest="runBacktest"
             />
           </div>
+        </section>
+
+        <section v-else-if="activeView === 'candidates'" class="candidates-view">
+          <header class="strategy-page-head">
+            <div>
+              <p class="eyebrow">CANDIDATE UNIVERSE</p>
+              <h2>候选股票</h2>
+              <p>每日 08:30 执行筛选后的完整清单，可按策略与状态过滤。</p>
+            </div>
+            <div class="strategy-page-summary">
+              <span><strong>{{ queriedStocks.length }}</strong>只股票</span>
+              <span><strong>{{ filteredQueriedStocks.length }}</strong>当前筛选</span>
+              <span><strong>{{ triggeredCount }}</strong>已触发</span>
+            </div>
+          </header>
+
+          <article class="query-panel">
+            <header class="query-head">
+              <div>
+                <h2>全部候选股票</h2>
+                <p>闭市时保留最近一次筛选结果</p>
+              </div>
+              <button class="text-button" type="button" :disabled="loading" @click="load">
+                <RefreshCw :size="16" />
+                <span>刷新</span>
+              </button>
+            </header>
+
+            <div class="query-tabs">
+              <button
+                v-for="tab in queryTabs"
+                :key="tab.key"
+                type="button"
+                :class="{ active: tab.key === activeQueryTab }"
+                @click="activeQueryTab = tab.key"
+              >
+                <span>{{ tab.label }}</span>
+                <strong>{{ tab.count }}</strong>
+              </button>
+            </div>
+
+            <div class="query-table-wrap expanded">
+              <table class="query-table">
+                <thead>
+                  <tr>
+                    <th>股票代码</th>
+                    <th>名称</th>
+                    <th>市场</th>
+                    <th>来源策略</th>
+                    <th>状态</th>
+                    <th>信号原因</th>
+                    <th>评分</th>
+                    <th>更新时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in filteredQueriedStocks" :key="item.symbol">
+                    <td>
+                      <div class="query-symbol">
+                        <Star class="favorite" :class="{ filled: item.starred }" :size="17" />
+                        <strong>{{ item.symbol }}</strong>
+                      </div>
+                    </td>
+                    <td>{{ item.name }}</td>
+                    <td>
+                      <span class="market-pill" :class="item.market.toLowerCase()">{{ item.market }}</span>
+                    </td>
+                    <td>
+                      <strong class="strategy-label">{{ item.strategy }}</strong>
+                      <small>{{ item.strategyDetail }}</small>
+                    </td>
+                    <td>
+                      <span class="query-status" :class="statusClass(item.status)">
+                        {{ item.statusLabel }}
+                      </span>
+                    </td>
+                    <td class="reason-cell">{{ item.reason }}</td>
+                    <td>
+                      <div class="score-cell" :title="item.scoreTooltip">
+                        <strong>{{ item.score }}</strong>
+                        <span class="score-track">
+                          <i :style="{ width: `${item.score}%` }" />
+                        </span>
+                      </div>
+                    </td>
+                    <td>{{ item.updatedAt }}</td>
+                  </tr>
+                  <tr v-if="filteredQueriedStocks.length === 0">
+                    <td class="empty-row" colspan="8">暂无候选股票</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
         </section>
 
         <PositionManagement
