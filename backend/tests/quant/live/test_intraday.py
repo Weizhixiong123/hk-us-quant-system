@@ -56,9 +56,15 @@ def test_entry_signal_uses_trade_window_and_maps_long_action(monkeypatch):
         closes_15m=[1.0] * 30,
         closes_5m=[1.0] * 30,
         closes_3m=[1.0] * 30,
+        fast_ema=8,
+        slow_ema=21,
+        signal_ema=5,
     )
 
     assert calls[0]["within_trade_window"] is True
+    assert calls[0]["fast_period"] == 8
+    assert calls[0]["slow_period"] == 21
+    assert calls[0]["signal_period"] == 5
     assert signal.action == "enter_long"
     assert signal.side == "long"
 

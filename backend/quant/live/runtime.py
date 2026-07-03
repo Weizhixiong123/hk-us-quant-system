@@ -198,7 +198,10 @@ class LiveRuntime:
             self._run_intraday_premarket_scan(at)
         elif action.hook == "intraday_3m_signal":
             self._run_intraday_entries(action.market, at)
+        elif action.hook == "intraday_3m_exit":
             self._run_intraday_exits(action.market, at)
+        elif action.hook == "intraday_force_close":
+            self._force_close_intraday_positions(action.market, at)
         elif action.hook == "portfolio_month_end_scan":
             self._run_portfolio_month_end_scan(at)
         elif action.hook == "portfolio_daily_review":
@@ -212,7 +215,14 @@ class LiveRuntime:
             return
 
         candidates = self.data_provider.intraday_candidates()
-        symbols = build_premarket_watchlist(candidates)
+        symbols = build_premarket_watchlist(
+            candidates,
+            min_turnover=self.params.intraday.min_turnover,
+            min_amplitude_pct=self.params.intraday.min_amplitude_pct,
+            max_amplitude_pct=self.params.intraday.max_amplitude_pct,
+            min_price=self.params.intraday.min_price,
+            min_turnover_rate=self.params.intraday.min_turnover_rate,
+        )
         self.runtime_state.intraday_watchlist = symbols
         if symbols:
             self.gateway.subscribe(symbols)
@@ -273,7 +283,8 @@ class LiveRuntime:
             bars3 = self.market_data.interval_bars(symbol, 3, limit=80)
             bars5 = self.market_data.interval_bars(symbol, 5, limit=80)
             bars15 = self.market_data.interval_bars(symbol, 15, limit=80)
-            if len(bars3) < 27 or len(bars5) < 27 or len(bars15) < 27:
+            minimum_bars = self.params.intraday.slow_ema + 1
+            if len(bars3) < minimum_bars or len(bars5) < minimum_bars or len(bars15) < minimum_bars:
                 continue
             price = self.market_data.latest_price(symbol) or bars5[-1].close
             signal = evaluate_intraday_entry_signal(
@@ -283,6 +294,11 @@ class LiveRuntime:
                 closes_15m=[bar.close for bar in bars15],
                 closes_5m=[bar.close for bar in bars5],
                 closes_3m=[bar.close for bar in bars3],
+                fast_ema=self.params.intraday.fast_ema,
+                slow_ema=self.params.intraday.slow_ema,
+                signal_ema=self.params.intraday.signal_ema,
+                open_after_minutes=self.params.intraday.open_after_minutes,
+                close_before_minutes=self.params.intraday.close_before_minutes,
             )
             if signal.action not in ("enter_long", "enter_short"):
                 continue
@@ -347,11 +363,43 @@ class LiveRuntime:
                 self.runtime_state.mark_intraday_closed(position.symbol)
             self._record_signal("intraday_macd", position.symbol, result.reasons, at, submitted=result.submitted)
 
+    def _force_close_intraday_positions(self, market: Market, at: datetime) -> None:
+        snapshot = self.live_state.snapshot()
+        for position in snapshot.get("positions", []):
+            if _market_from_symbol(position.symbol) != market:
+                continue
+            if not self.runtime_state.owns_intraday_symbol(position.symbol):
+                continue
+            price = self.market_data.latest_price(position.symbol) or float(position.price)
+            result = execute_exit_order(
+                gateway=self.gateway,
+                symbol=position.symbol,
+                price=price,
+                quantity=int(position.volume),
+                side=_position_side(position.direction),
+                reason="尾盘强制清仓",
+            )
+            self.runtime_state.record_order_result(result.submitted, result.reasons)
+            if result.submitted:
+                self.runtime_state.mark_intraday_closed(position.symbol)
+            self._record_signal(
+                "intraday_macd",
+                position.symbol,
+                result.reasons,
+                at,
+                submitted=result.submitted,
+            )
+
     def _three_period_momentum(self, symbol: str) -> str:
         """三周期(15m/5m/3m)MACD 柱方向:全升 rising / 全降 falling / 否则 mixed。"""
         directions = []
         for interval in (15, 5, 3):
-            points = macd([bar.close for bar in self.market_data.interval_bars(symbol, interval, limit=80)])
+            points = macd(
+                [bar.close for bar in self.market_data.interval_bars(symbol, interval, limit=80)],
+                fast_period=self.params.intraday.fast_ema,
+                slow_period=self.params.intraday.slow_ema,
+                signal_period=self.params.intraday.signal_ema,
+            )
             if len(points) < 2:
                 return "mixed"
             directions.append("rising" if points[-1].hist > points[-2].hist else "falling")
@@ -543,13 +591,17 @@ class LiveRuntime:
             bars15 = self.market_data.interval_bars(symbol, 15, limit=80)
             bars5 = self.market_data.interval_bars(symbol, 5, limit=80)
             bars3 = self.market_data.interval_bars(symbol, 3, limit=80)
-            if len(bars15) >= 27 and len(bars5) >= 27 and len(bars3) >= 27:
+            minimum_bars = self.params.intraday.slow_ema + 1
+            if len(bars15) >= minimum_bars and len(bars5) >= minimum_bars and len(bars3) >= minimum_bars:
                 decision = build_intraday_decision(
                     closes_15m=[b.close for b in bars15],
                     closes_5m=[b.close for b in bars5],
                     closes_3m=[b.close for b in bars3],
                     side="long",
                     within_trade_window=True,
+                    fast_period=self.params.intraday.fast_ema,
+                    slow_period=self.params.intraday.slow_ema,
+                    signal_period=self.params.intraday.signal_ema,
                 )
                 return {"consistency": float(decision.confidence)}
         except Exception:
@@ -662,6 +714,8 @@ class DryRunGateway:
 def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams | None = None) -> LiveRuntime:
     all_settings = load_live_settings()
     settings = all_settings.get("runtime", {})
+    intraday_params = all_settings.get("intraday_params", {})
+
     config = RuntimeConfig(
         enabled=_env_bool("LIVE_RUNTIME_ENABLED", bool(settings.get("enabled", False))),
         dry_run=_env_bool("LIVE_RUNTIME_DRY_RUN", bool(settings.get("dry_run", True))),
@@ -700,14 +754,24 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
         from quant.live.config import load_futu_config
 
         gateway = FutuLiveGateway(load_futu_config(), live_state)
+
+    # 从 intraday_params 读取筛选参数并合并到 params
+    effective_params = params or LiveParams()
+    if intraday_params:
+        effective_params.update("intraday_macd", intraday_params)
+
     return LiveRuntime(
         live_state=live_state,
         gateway=gateway,
-        scheduler=LiveScheduler(markets=runtime_markets),
+        scheduler=LiveScheduler(
+            markets=runtime_markets,
+            open_after_minutes=intraday_params.get("open_after_minutes", 30),
+            close_before_minutes=intraday_params.get("close_before_minutes", 90),
+        ),
         data_provider=data_provider,
         market_data=market_data,
         config=config,
-        params=params,
+        params=effective_params,
         db_path=live_db_path_for_mode(all_settings),
         manual_intraday_symbols=manual_symbols if manual_mode else None,
     )

@@ -1,3 +1,5 @@
+import pytest
+
 from quant.live.settings import load_live_settings, public_live_settings, save_live_settings
 
 
@@ -64,3 +66,24 @@ def test_manual_intraday_universe_is_normalized_and_deduplicated(tmp_path):
             {"symbol": "AAPL", "name": "Apple", "market": "US", "shortable": False},
         ],
     }
+
+
+def test_intraday_params_are_persisted_and_validated(tmp_path):
+    path = tmp_path / "live-settings.json"
+    settings = save_live_settings(
+        {
+            "intraday_params": {
+                "fast_ema": 8,
+                "slow_ema": 21,
+                "signal_ema": 5,
+                "min_turnover": 8_000_000,
+            }
+        },
+        path,
+    )
+
+    assert settings["intraday_params"]["fast_ema"] == 8
+    assert load_live_settings(path)["intraday_params"]["min_turnover"] == 8_000_000
+
+    with pytest.raises(ValueError, match="快线周期必须小于慢线周期"):
+        save_live_settings({"intraday_params": {"fast_ema": 30}}, path)

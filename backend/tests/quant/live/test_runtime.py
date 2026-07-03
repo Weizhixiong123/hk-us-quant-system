@@ -227,6 +227,24 @@ def test_runtime_intraday_entry_calls_executor_and_updates_state(tmp_path, monke
     assert snapshot["positions"][0].symbol == "AAPL"
 
 
+def test_runtime_force_close_only_closes_owned_intraday_positions(tmp_path):
+    runtime, gateway = _runtime(tmp_path)
+    gateway.send_order("AAPL", "多", "开", 100, 10)
+    gateway.send_order("MSFT", "多", "开", 100, 10)
+    runtime.runtime_state.mark_intraday_open("AAPL")
+
+    runtime._force_close_intraday_positions(
+        "US",
+        datetime(2026, 6, 23, 19, 50, tzinfo=timezone.utc),
+    )
+
+    positions = runtime.live_state.snapshot()["positions"]
+    assert [position.symbol for position in positions] == ["MSFT"]
+    assert not runtime.runtime_state.owns_intraday_symbol("AAPL")
+    events = list_live_events(kind="signal", db_path=tmp_path / "live.sqlite3")
+    assert events[0].payload["reasons"] == ["尾盘强制清仓"]
+
+
 def test_runtime_run_once_persists_gateway_snapshot(tmp_path):
     runtime, gateway = _runtime(tmp_path)
     gateway.send_order("AAPL", "多", "开", 100, 10)

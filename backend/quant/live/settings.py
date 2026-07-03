@@ -9,6 +9,23 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+INTRADAY_PARAM_DEFAULTS: dict[str, int | float] = {
+    "fast_ema": 12,
+    "slow_ema": 26,
+    "signal_ema": 9,
+    "position_fraction_pct": 10.0,
+    "max_positions": 3,
+    "max_daily_loss_pct": 3.0,
+    "open_after_minutes": 30,
+    "close_before_minutes": 90,
+    "min_turnover": 5_000_000.0,
+    "min_amplitude_pct": 2.0,
+    "max_amplitude_pct": 8.0,
+    "min_price": 2.0,
+    "min_turnover_rate": 0.0,
+}
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "runtime": {
         "enabled": False,
@@ -46,6 +63,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "selection_mode": "auto",
         "manual_symbols": [],
     },
+    "intraday_params": INTRADAY_PARAM_DEFAULTS,
 }
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,23}$")
@@ -99,6 +117,9 @@ def public_live_settings(settings: Mapping[str, Any] | None = None) -> dict[str,
     tiger = value.setdefault("tiger", {})
     tiger["private_key_configured"] = bool(tiger.get("private_key"))
     tiger.pop("private_key", None)
+    intraday_params = value.setdefault("intraday_params", {})
+    for key, default in INTRADAY_PARAM_DEFAULTS.items():
+        intraday_params.setdefault(key, default)
     value["saved_at"] = datetime.now(timezone.utc).isoformat()
     value["restart_required"] = True
     return value
@@ -162,6 +183,20 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     intraday_universe["manual_symbols"] = _normalize_manual_symbols(
         intraday_universe.get("manual_symbols")
     )
+
+    intraday_params = settings.setdefault("intraday_params", {})
+    integer_keys = {
+        "fast_ema",
+        "slow_ema",
+        "signal_ema",
+        "max_positions",
+        "open_after_minutes",
+        "close_before_minutes",
+    }
+    for key, default in INTRADAY_PARAM_DEFAULTS.items():
+        value = intraday_params.get(key, default)
+        intraday_params[key] = int(value) if key in integer_keys else float(value)
+
     return settings
 
 
@@ -242,3 +277,33 @@ def _validate(settings: Mapping[str, Any]) -> None:
     for item in intraday_universe["manual_symbols"]:
         if item["market"] not in {"HK", "US"} or not _SYMBOL_PATTERN.fullmatch(item["symbol"]):
             raise ValueError("manual symbol is invalid")
+
+    intraday = settings["intraday_params"]
+    if not 2 <= intraday["fast_ema"] <= 60:
+        raise ValueError("MACD 快线周期必须在 2 到 60 之间")
+    if not 3 <= intraday["slow_ema"] <= 120:
+        raise ValueError("MACD 慢线周期必须在 3 到 120 之间")
+    if not 2 <= intraday["signal_ema"] <= 60:
+        raise ValueError("MACD 信号线周期必须在 2 到 60 之间")
+    if intraday["fast_ema"] >= intraday["slow_ema"]:
+        raise ValueError("MACD 快线周期必须小于慢线周期")
+    if not 0 < intraday["position_fraction_pct"] <= 100:
+        raise ValueError("单次开仓仓位必须大于 0 且不超过 100%")
+    if not 1 <= intraday["max_positions"] <= 20:
+        raise ValueError("最大同时持仓必须在 1 到 20 之间")
+    if not 0 < intraday["max_daily_loss_pct"] <= 100:
+        raise ValueError("单日最大亏损必须大于 0 且不超过 100%")
+    if not 0 <= intraday["open_after_minutes"] <= 240 or not 0 <= intraday["close_before_minutes"] <= 240:
+        raise ValueError("开盘等待和尾盘停开时间必须在 0 到 240 分钟之间")
+    if intraday["min_amplitude_pct"] > intraday["max_amplitude_pct"]:
+        raise ValueError("振幅下限不能大于振幅上限")
+    if intraday["open_after_minutes"] + intraday["close_before_minutes"] >= 390:
+        raise ValueError("开盘等待与收盘前停止时间之和必须小于 390 分钟")
+    if min(
+        intraday["min_turnover"],
+        intraday["min_amplitude_pct"],
+        intraday["max_amplitude_pct"],
+        intraday["min_price"],
+        intraday["min_turnover_rate"],
+    ) < 0:
+        raise ValueError("盘前筛选参数不能小于 0")

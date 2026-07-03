@@ -8,8 +8,10 @@ from quant.live.clock import (
     HolidayCalendar,
     Market,
     close_review_time,
+    is_force_close_window,
     is_bar_close,
     is_intraday_entry_window,
+    is_market_open,
     is_month_end_rebalance_day,
     is_trading_day,
     market_time,
@@ -20,6 +22,8 @@ from quant.live.clock import (
 ScheduleHook = Literal[
     "intraday_premarket_scan",
     "intraday_3m_signal",
+    "intraday_3m_exit",
+    "intraday_force_close",
     "portfolio_daily_review",
     "portfolio_month_end_scan",
 ]
@@ -39,13 +43,23 @@ class LiveScheduler:
         self,
         markets: Sequence[Market] = ("HK", "US"),
         holidays: HolidayCalendar | None = None,
+        open_after_minutes: int = 30,
+        close_before_minutes: int = 90,
     ) -> None:
         self.markets = tuple(markets)
         self.holidays = holidays
+        self.open_after_minutes = open_after_minutes
+        self.close_before_minutes = close_before_minutes
         self._dispatched: set[tuple[ScheduleHook, Market, datetime]] = set()
 
     def due_actions(self, at: datetime) -> list[SchedulerAction]:
-        actions = build_due_actions(at, self.markets, self.holidays)
+        actions = build_due_actions(
+            at,
+            self.markets,
+            self.holidays,
+            self.open_after_minutes,
+            self.close_before_minutes,
+        )
         fresh_actions: list[SchedulerAction] = []
         for action in actions:
             key = (action.hook, action.market, _minute(action.scheduled_for))
@@ -63,6 +77,8 @@ def build_due_actions(
     at: datetime,
     markets: Sequence[Market] = ("HK", "US"),
     holidays: HolidayCalendar | None = None,
+    open_after_minutes: int = 30,
+    close_before_minutes: int = 90,
 ) -> list[SchedulerAction]:
     actions: list[SchedulerAction] = []
     for market in markets:
@@ -82,17 +98,42 @@ def build_due_actions(
                 )
             )
 
-        if is_intraday_entry_window(local, market, holidays):
-            if is_bar_close(local, 3, market):
+        if is_force_close_window(local, market, holidays):
+            actions.append(
+                SchedulerAction(
+                    hook="intraday_force_close",
+                    strategy_id="intraday_macd",
+                    market=market,
+                    scheduled_for=_minute(local),
+                    reason="尾盘强制清仓日内持仓",
+                )
+            )
+        elif is_market_open(local, market, holidays) and is_bar_close(local, 3, market):
+            if is_intraday_entry_window(
+                local,
+                market,
+                open_after_minutes=open_after_minutes,
+                close_before_minutes=close_before_minutes,
+                holidays=holidays,
+            ):
                 actions.append(
                     SchedulerAction(
                         hook="intraday_3m_signal",
                         strategy_id="intraday_macd",
                         market=market,
                         scheduled_for=_minute(local),
-                        reason="3min 收线后检查日内进出场(三周期柱动量)",
+                        reason="3min 收线后检查日内开仓(三周期柱动量)",
                     )
                 )
+            actions.append(
+                SchedulerAction(
+                    hook="intraday_3m_exit",
+                    strategy_id="intraday_macd",
+                    market=market,
+                    scheduled_for=_minute(local),
+                    reason="3min 收线后检查日内持仓退出",
+                )
+            )
 
         if _same_minute(local, close_review_time(day, market)):
             if is_month_end_rebalance_day(day, market, holidays):

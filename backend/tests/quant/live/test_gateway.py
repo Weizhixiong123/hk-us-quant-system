@@ -1,6 +1,7 @@
 from quant.live.gateway import (
     _clean_symbol,
     _futu_setting_from_config,
+    _install_pandas_append_compat,
     _resolve_exchange,
     _tiger_setting_from_config,
 )
@@ -24,6 +25,11 @@ def test_resolve_exchange_uses_symbol_market_first():
     assert _resolve_exchange("AAPL.US", "HK", _Exchange) == "SMART"
 
 
+def test_resolve_exchange_infers_market_for_bare_symbols():
+    assert _resolve_exchange("00700", "US", _Exchange) == "SEHK"
+    assert _resolve_exchange("AAPL", "HK", _Exchange) == "SMART"
+
+
 def test_resolve_exchange_uses_config_market_and_explicit_override():
     assert _resolve_exchange("00700", "HK", _Exchange) == "SEHK"
     assert _resolve_exchange("AAPL", "US", _Exchange) == "SMART"
@@ -35,6 +41,27 @@ def test_resolve_exchange_allows_gateway_specific_us_default():
         _resolve_exchange("AAPL.US", "HK", _Exchange, us_default_exchange="NASDAQ")
         == "NASDAQ"
     )
+
+
+def test_pandas_append_compat_supports_legacy_futu_history_adapter():
+    import pandas as pd
+
+    original = getattr(pd.DataFrame, "append", None)
+    try:
+        if original is not None:
+            delattr(pd.DataFrame, "append")
+        _install_pandas_append_compat()
+
+        result = pd.DataFrame({"value": [1]}).append(
+            pd.DataFrame({"value": [2]}), ignore_index=True
+        )
+
+        assert result["value"].tolist() == [1, 2]
+    finally:
+        if original is None:
+            delattr(pd.DataFrame, "append")
+        else:
+            pd.DataFrame.append = original
 
 
 def test_tiger_setting_maps_config_keys():

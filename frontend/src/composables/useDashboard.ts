@@ -81,8 +81,14 @@ export function useDashboard() {
   }
 
   async function saveParam(strategy: StrategyConfig, key: string, value: ParamValue) {
-    const updated = await updateStrategyParams(strategy.id, { [key]: value });
-    patchStrategy(updated);
+    error.value = null;
+    try {
+      const updated = await updateStrategyParams(strategy.id, { [key]: value });
+      patchStrategy(updated);
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "参数保存失败";
+      strategy.params = { ...strategy.params };
+    }
   }
 
   async function runBacktest(strategyId: string, market: Market) {
@@ -178,4 +184,3 @@ export function useDashboard() {
     watchlist
   };
 }
-

@@ -166,6 +166,9 @@ def build_intraday_decision(
     closes_3m: Sequence[float],
     side: str,
     within_trade_window: bool,
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9,
 ) -> IntradayDecision:
     """三周期(15m/5m/3m)MACD 柱动量同步决策。
 
@@ -175,9 +178,14 @@ def build_intraday_decision(
         raise ValueError("side must be 'long' or 'short'")
 
     reasons: list[str] = []
-    points_15m = macd(closes_15m)
-    points_5m = macd(closes_5m)
-    points_3m = macd(closes_3m)
+    macd_kwargs = {
+        "fast_period": fast_period,
+        "slow_period": slow_period,
+        "signal_period": signal_period,
+    }
+    points_15m = macd(closes_15m, **macd_kwargs)
+    points_5m = macd(closes_5m, **macd_kwargs)
+    points_3m = macd(closes_3m, **macd_kwargs)
 
     if not within_trade_window:
         reasons.append("不在日内开仓时间窗")
@@ -199,4 +207,3 @@ def build_intraday_decision(
     confidence = len(passed) / len(checks)
     action = side if confidence == 1 and not hard_blocked else "wait"
     return IntradayDecision(action=action, confidence=confidence, reasons=tuple(reasons))
-

@@ -41,9 +41,21 @@ class IntradayExitSignal:
 
 def build_premarket_watchlist(
     candidates: Sequence[IntradayCandidate],
+    *,
     min_turnover: float = 5_000_000.0,
+    min_amplitude_pct: float = 2.0,
+    max_amplitude_pct: float = 8.0,
+    min_price: float = 2.0,
+    min_turnover_rate: float = 0.0,
 ) -> list[str]:
-    hits = screen_intraday(candidates, min_turnover)
+    hits = screen_intraday(
+        candidates,
+        min_turnover=min_turnover,
+        min_amplitude_pct=min_amplitude_pct,
+        max_amplitude_pct=max_amplitude_pct,
+        min_price=min_price,
+        min_turnover_rate=min_turnover_rate,
+    )
     return [hit.symbol for hit in hits if hit.passed]
 
 
@@ -54,18 +66,31 @@ def evaluate_intraday_entry_signal(
     closes_15m: Sequence[float],
     closes_5m: Sequence[float],
     closes_3m: Sequence[float],
+    *,
+    fast_ema: int = 12,
+    slow_ema: int = 26,
+    signal_ema: int = 9,
+    open_after_minutes: int = 30,
+    close_before_minutes: int = 90,
 ) -> IntradayEntrySignal:
     """三周期(15m/5m/3m)MACD 柱动量同步入场。
 
     先判多(三周期柱同步抬高),不成立再判空(三周期柱同步下降)。
     """
-    within_window = is_intraday_entry_window(at, market)
+    within_window = is_intraday_entry_window(
+        at, market,
+        open_after_minutes=open_after_minutes,
+        close_before_minutes=close_before_minutes,
+    )
     long_decision = build_intraday_decision(
         closes_15m=closes_15m,
         closes_5m=closes_5m,
         closes_3m=closes_3m,
         side="long",
         within_trade_window=within_window,
+        fast_period=fast_ema,
+        slow_period=slow_ema,
+        signal_period=signal_ema,
     )
     if long_decision.action == "long":
         return IntradayEntrySignal("enter_long", symbol, "long", long_decision.confidence, long_decision.reasons)
@@ -76,6 +101,9 @@ def evaluate_intraday_entry_signal(
         closes_3m=closes_3m,
         side="short",
         within_trade_window=within_window,
+        fast_period=fast_ema,
+        slow_period=slow_ema,
+        signal_period=signal_ema,
     )
     if short_decision.action == "short":
         return IntradayEntrySignal("enter_short", symbol, "short", short_decision.confidence, short_decision.reasons)

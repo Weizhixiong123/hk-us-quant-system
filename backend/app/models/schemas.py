@@ -253,6 +253,22 @@ class ManualSymbol(BaseModel):
     shortable: bool = False
 
 
+class IntradayParamsSettings(BaseModel):
+    fast_ema: int = Field(default=12, ge=2, le=60)
+    slow_ema: int = Field(default=26, ge=3, le=120)
+    signal_ema: int = Field(default=9, ge=2, le=60)
+    position_fraction_pct: float = Field(default=10.0, gt=0, le=100)
+    max_positions: int = Field(default=3, ge=1, le=20)
+    max_daily_loss_pct: float = Field(default=3.0, gt=0, le=100)
+    open_after_minutes: int = Field(default=30, ge=0, le=240, description="开盘后多少分钟开始允许开仓")
+    close_before_minutes: int = Field(default=90, ge=0, le=240, description="收盘前多少分钟停止开仓")
+    min_turnover: float = Field(default=5_000_000.0, ge=0, description="日均成交额下限(元)")
+    min_amplitude_pct: float = Field(default=2.0, ge=0, le=100, description="前日振幅下限(%)")
+    max_amplitude_pct: float = Field(default=8.0, ge=0, le=100, description="前日振幅上限(%)")
+    min_price: float = Field(default=2.0, ge=0, description="股价下限(元)")
+    min_turnover_rate: float = Field(default=0.0, ge=0, le=100, description="换手率下限(%)")
+
+
 class SymbolNameLookup(BaseModel):
     symbol: str
     market: Market
@@ -270,6 +286,7 @@ class LiveSettingsUpdate(BaseModel):
     tiger: TigerLiveSettings | None = None
     safety: LiveSafetySettings | None = None
     intraday_universe: IntradayUniverseSettings | None = None
+    intraday_params: IntradayParamsSettings | None = None
 
 
 class LiveSettingsSnapshot(BaseModel):
@@ -278,6 +295,7 @@ class LiveSettingsSnapshot(BaseModel):
     tiger: PublicTigerLiveSettings
     safety: LiveSafetySettings
     intraday_universe: IntradayUniverseSettings
+    intraday_params: IntradayParamsSettings
     saved_at: datetime
     restart_required: bool = True
 

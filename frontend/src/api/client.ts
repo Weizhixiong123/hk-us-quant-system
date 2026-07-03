@@ -26,7 +26,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const detail = await response.text();
+    const body = await response.text();
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { detail?: string };
+      detail = parsed.detail ?? body;
+    } catch {
+      // 非 JSON 错误响应直接展示原文。
+    }
     throw new Error(detail || `HTTP ${response.status}`);
   }
 

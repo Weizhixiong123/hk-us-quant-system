@@ -222,12 +222,29 @@ export interface IntradayUniverseSettings {
   manual_symbols: ManualSymbol[];
 }
 
+export interface IntradayParamsSettings {
+  fast_ema: number;
+  slow_ema: number;
+  signal_ema: number;
+  position_fraction_pct: number;
+  max_positions: number;
+  max_daily_loss_pct: number;
+  open_after_minutes: number;
+  close_before_minutes: number;
+  min_turnover: number;
+  min_amplitude_pct: number;
+  max_amplitude_pct: number;
+  min_price: number;
+  min_turnover_rate: number;
+}
+
 export interface LiveSettingsSnapshot {
   runtime: LiveRuntimeSettings;
   futu: FutuLiveSettings;
   tiger: TigerLiveSettings;
   safety: LiveSafetySettings;
   intraday_universe: IntradayUniverseSettings;
+  intraday_params: IntradayParamsSettings;
   saved_at: string;
   restart_required: boolean;
 }
@@ -241,6 +258,7 @@ export interface LiveSettingsUpdate {
   };
   safety?: Partial<LiveSafetySettings>;
   intraday_universe?: IntradayUniverseSettings;
+  intraday_params?: IntradayParamsSettings;
 }
 
 export interface RuntimeReloadResult {

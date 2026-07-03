@@ -94,6 +94,18 @@ def test_live_settings_api_round_trips_manual_intraday_universe(monkeypatch, tmp
     assert response["intraday_universe"]["manual_symbols"][0]["symbol"] == "TSLA"
 
 
+def test_live_settings_api_round_trips_intraday_params(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(tmp_path / "live-settings.json"))
+    payload = LiveSettingsUpdate.model_validate(
+        {"intraday_params": {"fast_ema": 8, "slow_ema": 21, "signal_ema": 5}}
+    )
+
+    response = update_live_settings(payload)
+
+    assert response["intraday_params"]["fast_ema"] == 8
+    assert response["intraday_params"]["slow_ema"] == 21
+
+
 def test_runtime_reload_returns_running_state(monkeypatch, tmp_path):
     import os
 

@@ -16,7 +16,23 @@ def test_scheduler_triggers_hk_premarket_scan():
 def test_scheduler_triggers_3m_intraday_signal():
     actions = build_due_actions(datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ), markets=("HK",))
 
-    assert [action.hook for action in actions] == ["intraday_3m_signal"]
+    assert [action.hook for action in actions] == ["intraday_3m_signal", "intraday_3m_exit"]
+
+
+def test_scheduler_forwards_custom_entry_window():
+    before_window = build_due_actions(
+        datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ),
+        markets=("HK",),
+        open_after_minutes=60,
+    )
+    inside_window = build_due_actions(
+        datetime(2026, 6, 23, 10, 30, tzinfo=HK_TZ),
+        markets=("HK",),
+        open_after_minutes=60,
+    )
+
+    assert [action.hook for action in before_window] == ["intraday_3m_exit"]
+    assert [action.hook for action in inside_window] == ["intraday_3m_signal", "intraday_3m_exit"]
 
 
 def test_scheduler_skips_non_3m_boundary():
@@ -31,13 +47,32 @@ def test_scheduler_skips_intraday_signals_during_hk_lunch_break():
     assert actions == []
 
 
-def test_scheduler_no_longer_emits_force_close():
+def test_scheduler_keeps_exit_checks_after_entry_cutoff():
+    actions = build_due_actions(
+        datetime(2026, 6, 23, 14, 30, tzinfo=HK_TZ),
+        markets=("HK",),
+    )
+
+    assert [action.hook for action in actions] == ["intraday_3m_exit"]
+
+
+def test_scheduler_emits_force_close_during_final_ten_minutes():
     scheduler = LiveScheduler(markets=("HK",))
     at = datetime(2026, 6, 23, 15, 50, tzinfo=HK_TZ)
 
     actions = scheduler.due_actions(at)
 
-    assert actions == []
+    assert [action.hook for action in actions] == ["intraday_force_close"]
+    assert scheduler.due_actions(at.replace(second=30)) == []
+
+
+def test_scheduler_does_not_require_polling_at_exact_second_zero():
+    actions = build_due_actions(
+        datetime(2026, 6, 23, 10, 15, 42, tzinfo=HK_TZ),
+        markets=("HK",),
+    )
+
+    assert [action.hook for action in actions] == ["intraday_3m_signal", "intraday_3m_exit"]
 
 
 def test_scheduler_triggers_month_end_scan_and_daily_review():

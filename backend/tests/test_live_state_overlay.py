@@ -69,6 +69,24 @@ def test_update_strategy_params_syncs_live_params():
     assert risk["intraday_position_count"].detail.endswith("/5")
 
 
+def test_update_strategy_params_persists_when_enabled(monkeypatch, tmp_path):
+    from app.services.state import AppState
+    from quant.live.params import LiveParams
+
+    settings_path = tmp_path / "live-settings.json"
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+
+    state = AppState(params=LiveParams(), persist_strategy_params=True)
+    state.update_strategy_params(
+        "intraday_macd",
+        {"fast_ema": 8, "slow_ema": 21, "signal_ema": 5},
+    )
+
+    restored = AppState(params=LiveParams(), persist_strategy_params=True)
+    assert restored.params.intraday.fast_ema == 8
+    assert restored.params.intraday.slow_ema == 21
+
+
 def test_dashboard_account_reflects_dry_run_simulated_account():
     live_state = LiveGatewayState()
     live_state.update_account(

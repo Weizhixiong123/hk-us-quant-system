@@ -39,7 +39,11 @@ def create_app() -> FastAPI:
     )
     app.state.live_state = live_state
     app.state.runtime_manager = runtime_manager
-    app.state.quant_state = AppState(app.state.live_state, live_params)
+    app.state.quant_state = AppState(
+        app.state.live_state,
+        live_params,
+        persist_strategy_params=True,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),

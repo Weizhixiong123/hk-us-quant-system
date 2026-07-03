@@ -78,15 +78,25 @@ class DefaultLiveDataProvider:
             latest_price = self.market_data.latest_price(item.symbol) or float(daily.iloc[-1]["close"])
             prev_close = float(prev["close"])
             amplitude = (float(prev["high"]) - float(prev["low"])) / prev_close * 100 if prev_close > 0 else 0.0
-            turnover = (recent["close"] * recent["volume"]).mean()
+            avg_turnover = float((recent["close"] * recent["volume"]).mean())
             halted, ex_dividend_soon, major_news = self.market_info.lookup(item.symbol)
+            # 从基本面数据取总市值，用于换手率近似计算
+            fundamentals = load_fundamentals(
+                item.symbol, item.market,
+                self.fundamentals_source,
+                self.risk_blocklist,
+                self._fundamentals_cache,
+            )
+            market_cap = fundamentals.market_cap if fundamentals else 0.0
             candidates.append(
                 IntradayCandidate(
                     symbol=item.symbol,
                     market=item.market,
-                    avg_turnover=float(turnover),
+                    avg_turnover=avg_turnover,
                     prev_amplitude_pct=round(amplitude, 4),
                     price=float(latest_price),
+                    turnover_rate=0.0,  # 由 screener 内部通过 avg_turnover/market_cap 计算
+                    market_cap=market_cap,
                     halted=halted,
                     ex_dividend_soon=ex_dividend_soon,
                     major_news=major_news,

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from quant.live.params import IntradayParams, LiveParams, PortfolioParams
 
 
 def test_defaults_match_strategy_function_defaults():
     intraday = IntradayParams()
+    assert (intraday.fast_ema, intraday.slow_ema, intraday.signal_ema) == (12, 26, 9)
     assert intraday.stop_loss_pct == 1.5
     assert intraday.take_profit_2_pct == 3.5
     assert intraday.position_fraction_pct == 10.0
@@ -20,6 +23,18 @@ def test_update_intraday_params():
     assert params.intraday.stop_loss_pct == 2.0
     assert params.intraday.max_positions == 5
     assert params.intraday.take_profit_1_pct == 2.0  # 未改动保持默认
+
+
+def test_update_intraday_macd_params_and_rejects_invalid_periods():
+    params = LiveParams()
+    params.update("intraday_macd", {"fast_ema": 8, "slow_ema": 21, "signal_ema": 5})
+
+    assert (params.intraday.fast_ema, params.intraday.slow_ema, params.intraday.signal_ema) == (8, 21, 5)
+
+    with pytest.raises(ValueError, match="快线周期必须小于慢线周期"):
+        params.update("intraday_macd", {"fast_ema": 30})
+
+    assert params.intraday.fast_ema == 8
 
 
 def test_update_ignores_unknown_keys():

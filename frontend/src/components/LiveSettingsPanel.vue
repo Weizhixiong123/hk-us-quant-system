@@ -20,6 +20,7 @@ import type {
 } from "../api/types";
 
 type RuntimeMode = "dry_run" | "sandbox" | "live";
+type LiveSettingsForm = Omit<LiveSettingsSnapshot, "intraday_params">;
 
 const loading = ref(false);
 const applying = ref(false);
@@ -28,7 +29,7 @@ const error = ref("");
 const privateKeyDraft = ref("");
 const clearPrivateKey = ref(false);
 
-const form = reactive<LiveSettingsSnapshot>({
+const form = reactive<LiveSettingsForm>({
   runtime: {
     enabled: false,
     dry_run: true,

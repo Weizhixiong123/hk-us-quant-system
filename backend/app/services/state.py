@@ -26,7 +26,7 @@ from app.models.schemas import (
 from quant.data.universe import all_symbols
 from quant.indicators.scoring import ScoreInputs, score_for_symbol
 from quant.live.params import LiveParams
-from quant.live.settings import load_live_settings
+from quant.live.settings import INTRADAY_PARAM_DEFAULTS, load_live_settings, save_live_settings
 from quant.live.state import LiveGatewayState
 from quant.live.store import LiveEvent, list_live_events, live_db_path_for_mode
 
@@ -106,8 +106,15 @@ class AppState:
         live_state: LiveGatewayState | None = None,
         params: LiveParams | None = None,
         db_path=None,
+        persist_strategy_params: bool = False,
     ) -> None:
         self.params = params or LiveParams()
+        self._persist_strategy_params = persist_strategy_params
+        if persist_strategy_params:
+            self.params.update(
+                "intraday_macd",
+                load_live_settings().get("intraday_params", {}),
+            )
         self._lock = RLock()
         self._rng = random.Random(42)
         self.live_state = live_state
@@ -132,15 +139,13 @@ class AppState:
                 cadence="5min / 15min",
                 markets=["HK", "US"],
                 params={
-                    "fast_ema": 12,
-                    "slow_ema": 26,
-                    "signal_ema": 9,
+                    **{
+                        key: getattr(self.params.intraday, key)
+                        for key in INTRADAY_PARAM_DEFAULTS
+                    },
                     "stop_loss_pct": 1.5,
                     "take_profit_1_pct": 2.0,
                     "take_profit_2_pct": 3.5,
-                    "position_fraction_pct": 10.0,
-                    "max_positions": 3,
-                    "max_daily_loss_pct": 3.0,
                 },
                 risk_controls=[
                     "单日最大亏损 3%",
@@ -480,9 +485,16 @@ class AppState:
     ) -> StrategyConfig:
         with self._lock:
             strategy = self._find_strategy(strategy_id)
+            self.params.update(strategy_id, params)
             strategy.params.update(params)
             strategy.updated_at = self._now()
-            self.params.update(strategy_id, params)
+            if strategy_id == "intraday_macd" and self._persist_strategy_params:
+                persisted = {
+                    key: getattr(self.params.intraday, key)
+                    for key in INTRADAY_PARAM_DEFAULTS
+                }
+                save_live_settings({"intraday_params": persisted})
+                strategy.params.update(persisted)
             if strategy_id == "intraday_macd" and "max_daily_loss_pct" in params:
                 self.account.max_daily_loss_pct = self.params.intraday.max_daily_loss_pct
             self._append_log(

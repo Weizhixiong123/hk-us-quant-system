@@ -124,9 +124,19 @@ def update_strategy_params(
     request: Request,
 ) -> StrategyConfig:
     try:
-        return get_state(request).update_strategy_params(strategy_id, payload.params)
+        strategy = get_state(request).update_strategy_params(strategy_id, payload.params)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if strategy_id == "intraday_macd":
+        manager = getattr(request.app.state, "runtime_manager", None)
+        runtime = manager.runtime if manager else None
+        if runtime is not None:
+            runtime.scheduler.open_after_minutes = runtime.params.intraday.open_after_minutes
+            runtime.scheduler.close_before_minutes = runtime.params.intraday.close_before_minutes
+    return strategy
 
 
 @router.get("/positions", response_model=list[Position])

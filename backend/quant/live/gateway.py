@@ -152,6 +152,7 @@ class FutuLiveGateway:
             end=datetime.now(),
             interval=Interval.MINUTE,
         )
+        _install_pandas_append_compat()
         raw_bars = main_engine.query_history(req, _FUTU_GATEWAY_NAME) or []
         return _bars_from_vnpy(symbol, raw_bars)[-count:]
 
@@ -422,7 +423,22 @@ def _market_from_symbol(symbol: str) -> str | None:
         return "HK"
     if value.endswith(".US") or value.startswith("US."):
         return "US"
-    return None
+    if not value:
+        return None
+    return "HK" if value.isdigit() else "US"
+
+
+def _install_pandas_append_compat() -> None:
+    """Keep the current vnpy_futu history adapter working with pandas >= 2."""
+    import pandas as pd
+
+    if hasattr(pd.DataFrame, "append"):
+        return
+
+    def append(frame, other, ignore_index=False, **kwargs):
+        return pd.concat([frame, other], ignore_index=ignore_index, **kwargs)
+
+    pd.DataFrame.append = append  # type: ignore[attr-defined]
 
 
 def _bars_from_vnpy(symbol: str, raw_bars) -> list[Bar]:

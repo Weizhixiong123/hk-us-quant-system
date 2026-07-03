@@ -78,12 +78,14 @@ def is_market_open(
 def is_intraday_entry_window(
     at: datetime,
     market: Market,
+    open_after_minutes: int = 30,
+    close_before_minutes: int = 90,
     holidays: HolidayCalendar | None = None,
 ) -> bool:
     local = market_time(at, market)
     session = SESSIONS[market]
-    window_start = _combine(local.date(), session.open_time, session.timezone) + timedelta(minutes=30)
-    window_end = _combine(local.date(), session.close_time, session.timezone) - timedelta(minutes=90)
+    window_start = _combine(local.date(), session.open_time, session.timezone) + timedelta(minutes=open_after_minutes)
+    window_end = _combine(local.date(), session.close_time, session.timezone) - timedelta(minutes=close_before_minutes)
     return window_start <= local < window_end and is_market_open(local, market, holidays)
 
 
@@ -117,7 +119,7 @@ def is_month_end_rebalance_day(
 def is_bar_close(at: datetime, interval_minutes: int, market: Market) -> bool:
     local = market_time(at, market)
     minutes = local.hour * 60 + local.minute
-    return local.second == 0 and local.microsecond == 0 and minutes % interval_minutes == 0
+    return minutes % interval_minutes == 0
 
 
 def premarket_scan_time(day: date, market: Market) -> datetime:
