@@ -100,6 +100,50 @@ def _is_shortable(symbol: str) -> bool:
     return False
 
 
+def _current_manual_symbol_keys() -> set[str]:
+    try:
+        settings = load_live_settings()
+    except Exception:
+        return set()
+    universe = settings.get("intraday_universe", {}) or {}
+    keys: set[str] = set()
+    for item in universe.get("manual_symbols", []) or []:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", ""))
+        if symbol:
+            keys.add(_symbol_key(symbol))
+    return keys
+
+
+def _active_selection_symbols(payload: dict, current_manual_keys: set[str]) -> list[str]:
+    symbols = [str(symbol) for symbol in payload.get("symbols", []) if str(symbol)]
+    manual_symbols = [str(symbol) for symbol in payload.get("manual_symbols", []) if str(symbol)]
+    auto_symbols = [str(symbol) for symbol in payload.get("auto_symbols", []) if str(symbol)]
+    if manual_symbols or auto_symbols:
+        active_manual = (
+            [symbol for symbol in manual_symbols if _symbol_key(symbol) in current_manual_keys]
+            if current_manual_keys
+            else manual_symbols
+        )
+        return _merge_unique_symbols(active_manual + auto_symbols)
+    if str(payload.get("selection_mode", "")) == "manual" and current_manual_keys:
+        return [symbol for symbol in symbols if _symbol_key(symbol) in current_manual_keys]
+    return symbols
+
+
+def _merge_unique_symbols(symbols: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        key = _symbol_key(symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(symbol)
+    return merged
+
+
 class AppState:
     def __init__(
         self,
@@ -506,6 +550,13 @@ class AppState:
 
     def run_backtest(self, request: BacktestRequest) -> BacktestResult:
         strategy = self._find_strategy(request.strategy_id)
+        request = self._prepare_backtest_request(request, strategy)
+        print(
+            "[BACKTEST] 接口收到回测请求 "
+            f"strategy={request.strategy_id} market={request.market} "
+            f"range={request.start_date}~{request.end_date} symbols={len(request.symbols)}",
+            flush=True,
+        )
         try:
             from quant.backtest.service import run_backtest as run_quant_backtest
 
@@ -519,6 +570,12 @@ class AppState:
             result = self._failed_backtest_result(request, f"回测失败：{exc}")
 
         result = self._store_backtest_result(result)
+        print(
+            "[BACKTEST] 接口返回回测结果 "
+            f"id={result.id} trades={result.trades} notes={len(result.notes)} "
+            f"total_return_pct={result.total_return_pct}",
+            flush=True,
+        )
         self._append_log(
             source="backtest",
             severity="info",
@@ -538,6 +595,39 @@ class AppState:
                 message=f"回测历史读取失败：{exc}",
             )
             return []
+
+    def _prepare_backtest_request(
+        self,
+        request: BacktestRequest,
+        strategy: StrategyConfig,
+    ) -> BacktestRequest:
+        symbols = request.symbols
+        symbols_source = request.symbols_source
+        if not symbols:
+            market_watchlist = [item for item in self.watchlist if item.market == request.market]
+            selected_watchlist = [
+                item
+                for item in market_watchlist
+                if request.strategy_id != "intraday_macd"
+                or any(tag in {"盘前筛选", "手动选股", "等待 15m 收线确认"} for tag in item.tags)
+            ]
+            if request.strategy_id == "intraday_macd" and not selected_watchlist:
+                selected_watchlist = market_watchlist
+            symbols = [item.symbol for item in selected_watchlist]
+            if symbols:
+                if request.strategy_id == "intraday_macd" and any("手动选股" in item.tags for item in selected_watchlist):
+                    symbols_source = "日内选股（手动指定）"
+                elif request.strategy_id == "intraday_macd":
+                    symbols_source = "日内选股（自动筛选）"
+                else:
+                    symbols_source = "当前候选股票池"
+        return request.model_copy(
+            update={
+                "symbols": symbols,
+                "symbols_source": symbols_source,
+                "params_snapshot": dict(strategy.params),
+            }
+        )
 
     def _store_backtest_result(self, result: BacktestResult) -> BacktestResult:
         try:
@@ -828,24 +918,38 @@ class AppState:
 
     def _live_watchlist(self) -> list[WatchSymbol]:
         names = {_symbol_key(info.symbol): info.name for info in all_symbols()}
+        snapshot = self._live_snapshot() or {}
+        active_trade_keys = {
+            _symbol_key(position.symbol)
+            for position in snapshot.get("positions", [])
+            if float(position.volume) > 0
+        }
+        for order in snapshot.get("orders", []):
+            status = str(order.status).upper()
+            terminal = any(
+                marker in status
+                for marker in ("拒", "REJECT", "撤", "CANCEL", "全部成交", "FILLED_ALL", "ALLTRADED")
+            )
+            if not terminal:
+                active_trade_keys.add(_symbol_key(order.symbol))
         selection_events = list_live_events(kind="selection", limit=100, db_path=self._current_db_path())
-        current_intraday_mode = str(
-            load_live_settings().get("intraday_universe", {}).get("selection_mode", "auto")
-        )
+        current_manual_keys = _current_manual_symbol_keys()
         latest_selections = {}
         for event in selection_events:
-            if event.strategy_id not in latest_selections:
-                latest_selections[event.strategy_id] = event
-        active_selections = [
-            event
-            for event in latest_selections.values()
-            if event.strategy_id != "intraday_macd"
-            or str((event.payload or {}).get("selection_mode", "auto")) == current_intraday_mode
-        ]
+            payload = event.payload or {}
+            market = str(payload.get("market") or "")
+            if not market:
+                symbols = payload.get("symbols", [])
+                first_symbol = str(symbols[0]) if symbols else ""
+                market = _market_from_symbol(first_symbol) if first_symbol else "ALL"
+            key = (event.strategy_id, market)
+            if key not in latest_selections:
+                latest_selections[key] = event
+        active_selections = list(latest_selections.values())
         active_keys = {
             _symbol_key(str(symbol))
             for event in active_selections
-            for symbol in (event.payload or {}).get("symbols", [])
+            for symbol in _active_selection_symbols(event.payload or {}, current_manual_keys)
         }
         for event in active_selections:
             event_names = (event.payload or {}).get("names", {})
@@ -869,7 +973,11 @@ class AppState:
             latest_signals.setdefault(key, event)
             payload = event.payload or {}
             event_day = event.created_at.astimezone(_SERVER_TZ).date()
-            if event_day == today and bool(payload.get("submitted", False)):
+            if (
+                event_day == today
+                and bool(payload.get("submitted", False))
+                and key in active_trade_keys
+            ):
                 triggered_today.add(key)
 
         for key, event in latest_signals.items():
@@ -908,7 +1016,7 @@ class AppState:
             )
         for event in active_selections:
             payload = event.payload or {}
-            for raw_symbol in payload.get("symbols", []):
+            for raw_symbol in _active_selection_symbols(payload, current_manual_keys):
                 symbol = str(raw_symbol)
                 key = _symbol_key(symbol)
                 if not symbol or key in seen:
@@ -991,7 +1099,7 @@ class AppState:
             return []
         connected = bool(snapshot.get("connected"))
         detail = str(snapshot.get("detail", "")) or ("富途已连接" if connected else "富途未连接")
-        return [
+        gateway_status = [
             TradeLog(
                 id="LIVE-GATEWAY",
                 time=self._now(),
@@ -1000,6 +1108,17 @@ class AppState:
                 message=detail,
             )
         ]
+        broker_logs = [
+            TradeLog(
+                id=log.id,
+                time=log.time,
+                source=log.source,
+                severity=log.severity,
+                message=log.message,
+            )
+            for log in snapshot.get("logs", [])
+        ]
+        return gateway_status + broker_logs
 
 
 def _market_from_symbol(symbol: str) -> str:
@@ -1027,6 +1146,8 @@ def _selection_tags(strategy_id: str, selection_mode: str = "auto") -> list[str]
         return ["月末选股", "候选持仓"]
     if selection_mode == "manual":
         return ["手动选股", "等待 MACD 开仓信号"]
+    if selection_mode == "manual+auto":
+        return ["手动+筛选", "等待 15m 收线确认"]
     return ["盘前筛选", "等待 15m 收线确认"]
 
 

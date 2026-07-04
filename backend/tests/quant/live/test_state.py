@@ -1,5 +1,5 @@
 from quant.live.state import LiveGatewayState
-from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
+from quant.live.translate import GatewayAccount, GatewayLog, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 
 
 def test_connection_flag():
@@ -41,4 +41,12 @@ def test_account_update():
     s = LiveGatewayState()
     s.update_account(GatewayAccount("ACC1", 100000.0, 80000.0, 20000.0))
     assert s.snapshot()["account"].available == 80000.0
+
+
+def test_log_keeps_newest_first():
+    s = LiveGatewayState()
+    s.update_log(GatewayLog("L1", "t1", "FUTU_US", "info", "委托下单"))
+    s.update_log(GatewayLog("L2", "t2", "FUTU_US", "warning", "委托失败"))
+
+    assert [item.id for item in s.snapshot()["logs"]] == ["L2", "L1"]
 

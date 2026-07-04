@@ -96,6 +96,10 @@ export function createBacktest(payload: BacktestRequest): Promise<BacktestResult
   });
 }
 
+export function backtestTradesCsvUrl(backtestId: string): string {
+  return `${API_BASE}/backtests/${encodeURIComponent(backtestId)}/trades.csv`;
+}
+
 export function streamUrl(): string {
   if (import.meta.env.VITE_WS_BASE) {
     return `${import.meta.env.VITE_WS_BASE}/ws/stream`;

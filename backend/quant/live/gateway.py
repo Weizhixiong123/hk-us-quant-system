@@ -7,6 +7,7 @@ from quant.live.market_data import Bar
 from quant.live.state import LiveGatewayState
 from quant.live.translate import (
     account_from_vnpy,
+    log_from_vnpy,
     order_from_vnpy,
     position_from_vnpy,
     tick_from_vnpy,
@@ -36,6 +37,7 @@ class FutuLiveGateway:
         self.state = state
         self._main_engine = None
         self._event_engine = None
+        self._gateway_names: dict[str, str] = {}
 
     def connect(self) -> None:
         try:
@@ -53,6 +55,7 @@ class FutuLiveGateway:
         from vnpy.trader.engine import MainEngine
         from vnpy.trader.event import (
             EVENT_ACCOUNT,
+            EVENT_LOG,
             EVENT_ORDER,
             EVENT_POSITION,
             EVENT_TICK,
@@ -62,34 +65,44 @@ class FutuLiveGateway:
 
         self._event_engine = EventEngine()
         self._main_engine = MainEngine(self._event_engine)
-        self._main_engine.add_gateway(FutuGateway)
-
         self._event_engine.register(EVENT_ACCOUNT, self._on_account)
+        self._event_engine.register(EVENT_LOG, self._on_log)
         self._event_engine.register(EVENT_POSITION, self._on_position)
         self._event_engine.register(EVENT_ORDER, self._on_order)
         self._event_engine.register(EVENT_TRADE, self._on_trade)
         self._event_engine.register(EVENT_TICK, self._on_tick)
 
-        setting = _futu_setting_from_config(self.config)
         try:
-            self._main_engine.connect(setting, _FUTU_GATEWAY_NAME)
+            for market in self.config.markets:
+                gateway_name = _futu_gateway_name(market)
+                self._main_engine.add_gateway(FutuGateway, gateway_name)
+                self._gateway_names[market] = gateway_name
+                self._main_engine.connect(
+                    _futu_setting_from_config(self.config, market),
+                    gateway_name,
+                )
         except Exception:
             self.state.set_connected(False, "FUTU 连接失败")
             raise
-        self.state.set_connected(True, f"FUTU {self.config.trd_env} 连接请求已发送")
+        markets = "/".join(self.config.markets)
+        self.state.set_connected(
+            True,
+            f"FUTU {markets} {self.config.trd_env} 连接请求已发送",
+        )
 
     def subscribe(self, symbols: list[str], exchange: str | None = None) -> None:
         # 延迟 import:远程环境无 vnpy
         from vnpy.trader.constant import Exchange
         from vnpy.trader.object import SubscribeRequest
 
-        main_engine = self._require_main_engine()
         for symbol in symbols:
+            market = _futu_route_market(symbol, self.config.market, exchange)
+            main_engine, gateway_name = self._require_futu_gateway(market)
             req = SubscribeRequest(
                 symbol=_clean_symbol(symbol),
                 exchange=_resolve_exchange(symbol, self.config.market, Exchange, exchange),
             )
-            main_engine.subscribe(req, _FUTU_GATEWAY_NAME)
+            main_engine.subscribe(req, gateway_name)
 
     def send_order(
         self,
@@ -104,6 +117,7 @@ class FutuLiveGateway:
         from vnpy.trader.constant import Direction, Exchange, Offset, OrderType
         from vnpy.trader.object import OrderRequest
 
+        market = _futu_route_market(symbol, self.config.market, exchange)
         req = OrderRequest(
             symbol=_clean_symbol(symbol),
             exchange=_resolve_exchange(symbol, self.config.market, Exchange, exchange),
@@ -113,7 +127,8 @@ class FutuLiveGateway:
             price=price,
             offset=Offset(offset),
         )
-        return self._require_main_engine().send_order(req, _FUTU_GATEWAY_NAME)
+        main_engine, gateway_name = self._require_futu_gateway(market)
+        return main_engine.send_order(req, gateway_name)
 
     def cancel_order(
         self,
@@ -125,12 +140,14 @@ class FutuLiveGateway:
         from vnpy.trader.constant import Exchange
         from vnpy.trader.object import CancelRequest
 
+        market = _futu_route_market(symbol, self.config.market, exchange)
         req = CancelRequest(
             orderid=order_id,
             symbol=_clean_symbol(symbol),
             exchange=_resolve_exchange(symbol, self.config.market, Exchange, exchange),
         )
-        self._require_main_engine().cancel_order(req, _FUTU_GATEWAY_NAME)
+        main_engine, gateway_name = self._require_futu_gateway(market)
+        main_engine.cancel_order(req, gateway_name)
 
     def query_history_minute(
         self,
@@ -139,7 +156,8 @@ class FutuLiveGateway:
         exchange: str | None = None,
     ) -> list[Bar]:
         # 先校验连接（未连接抛 RuntimeError），再延迟 import vnpy（远程无 vnpy）。
-        main_engine = self._require_main_engine()
+        market = _futu_route_market(symbol, self.config.market, exchange)
+        main_engine, gateway_name = self._require_futu_gateway(market)
         from datetime import datetime, timedelta
 
         from vnpy.trader.constant import Exchange, Interval
@@ -153,7 +171,7 @@ class FutuLiveGateway:
             interval=Interval.MINUTE,
         )
         _install_pandas_append_compat()
-        raw_bars = main_engine.query_history(req, _FUTU_GATEWAY_NAME) or []
+        raw_bars = main_engine.query_history(req, gateway_name) or []
         return _bars_from_vnpy(symbol, raw_bars)[-count:]
 
     def close(self) -> None:
@@ -165,6 +183,13 @@ class FutuLiveGateway:
         if self._main_engine is None:
             raise RuntimeError("FutuLiveGateway is not connected")
         return self._main_engine
+
+    def _require_futu_gateway(self, market: str):
+        main_engine = self._require_main_engine()
+        gateway_name = self._gateway_names.get(market)
+        if gateway_name is None:
+            raise RuntimeError(f"FUTU {market} market is not configured")
+        return main_engine, gateway_name
 
     # ---- 内部事件回调 ----
 
@@ -183,6 +208,9 @@ class FutuLiveGateway:
 
     def _on_tick(self, event) -> None:
         self.state.update_tick(tick_from_vnpy(event.data))
+
+    def _on_log(self, event) -> None:
+        self.state.update_log(log_from_vnpy(event.data))
 
 
 class TigerLiveGateway:
@@ -376,14 +404,39 @@ def _tiger_setting_from_config(config: TigerGatewayConfig) -> dict[str, str]:
     }
 
 
-def _futu_setting_from_config(config: FutuGatewayConfig) -> dict[str, object]:
+def _futu_gateway_name(market: str) -> str:
+    return f"{_FUTU_GATEWAY_NAME}_{market.upper()}"
+
+
+def _futu_setting_from_config(
+    config: FutuGatewayConfig,
+    market: str | None = None,
+) -> dict[str, object]:
     return {
         "密码": "",
         "地址": config.host,
         "端口": config.port,
-        "市场": config.market,
+        "市场": (market or config.market).upper(),
         "环境": config.trd_env,
     }
+
+
+def _futu_route_market(
+    symbol: str,
+    default_market: str,
+    exchange: str | None = None,
+) -> str:
+    if exchange:
+        exchange_market = {
+            "SEHK": "HK",
+            "HKFE": "HK",
+            "SMART": "US",
+            "NASDAQ": "US",
+            "NYSE": "US",
+        }.get(exchange.upper())
+        if exchange_market:
+            return exchange_market
+    return _market_from_symbol(symbol) or default_market.upper()
 
 
 def _clean_symbol(symbol: str) -> str:

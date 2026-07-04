@@ -147,7 +147,7 @@ def test_build_live_runtime_uses_saved_manual_intraday_universe(monkeypatch, tmp
     runtime = build_live_runtime_from_env(LiveGatewayState())
 
     assert runtime.runtime_state.intraday_watchlist == ["TSLA"]
-    assert [item.symbol for item in runtime.data_provider.intraday_symbols] == ["TSLA"]
+    assert "TSLA" in [item.symbol for item in runtime.data_provider.intraday_symbols]
     assert runtime._is_shortable("TSLA") is True
 
 
@@ -155,7 +155,7 @@ def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):
     runtime, gateway = _runtime(tmp_path)
     at = datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc)
 
-    runtime._run_intraday_premarket_scan(at)
+    runtime._run_intraday_premarket_scan("US", at)
 
     assert runtime.runtime_state.intraday_watchlist == ["AAPL"]
     assert gateway.subscribed == ["AAPL"]
@@ -163,7 +163,7 @@ def test_runtime_premarket_scan_subscribes_and_persists_selection(tmp_path):
     assert events[0].payload["symbols"] == ["AAPL"]
 
 
-def test_manual_intraday_universe_bypasses_premarket_screener(tmp_path):
+def test_manual_intraday_universe_merges_with_premarket_screener(tmp_path):
     live_state = LiveGatewayState()
     runtime = LiveRuntime(
         live_state=live_state,
@@ -177,12 +177,14 @@ def test_manual_intraday_universe_bypasses_premarket_screener(tmp_path):
         manual_intraday_symbols=[SymbolInfo("TSLA", "Tesla", "US", shortable=True)],
     )
 
-    runtime._run_intraday_premarket_scan(datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc))
+    runtime._run_intraday_premarket_scan("US", datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc))
 
-    assert runtime.runtime_state.intraday_watchlist == ["TSLA"]
+    assert runtime.runtime_state.intraday_watchlist == ["TSLA", "AAPL"]
     assert runtime._is_shortable("TSLA") is True
     event = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")[0]
-    assert event.payload["selection_mode"] == "manual"
+    assert event.payload["selection_mode"] == "manual+auto"
+    assert event.payload["manual_symbols"] == ["TSLA"]
+    assert event.payload["auto_symbols"] == ["AAPL"]
     assert event.payload["names"] == {"TSLA": "Tesla"}
 
 
@@ -207,6 +209,29 @@ def test_runtime_catches_up_missed_us_premarket_scan(tmp_path):
     assert gateway.subscribed == ["AAPL"]
     events = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")
     assert events[0].payload["symbols"] == ["AAPL"]
+
+
+def test_runtime_catches_up_us_when_hk_watchlist_exists(tmp_path):
+    live_state = LiveGatewayState()
+    gateway = DryRunGateway(live_state)
+    runtime_state = StrategyRuntimeState()
+    runtime_state.intraday_watchlist = ["0700.HK"]
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=gateway,
+        scheduler=LiveScheduler(markets=("HK", "US")),
+        data_provider=FakeDataProvider(),
+        market_data=FakeMarketData(),
+        runtime_state=runtime_state,
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+    gateway.connect()
+
+    runtime.run_once(datetime(2026, 6, 23, 13, 3, tzinfo=timezone.utc))
+
+    assert runtime.runtime_state.intraday_watchlist == ["0700.HK", "AAPL"]
+    assert gateway.subscribed == ["AAPL"]
 
 
 def test_runtime_intraday_entry_calls_executor_and_updates_state(tmp_path, monkeypatch):

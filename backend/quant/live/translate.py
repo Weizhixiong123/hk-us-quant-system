@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import uuid4
 
 
 def enum_value(x: object) -> str:
@@ -63,6 +64,15 @@ class GatewayTick:
     time: str
 
 
+@dataclass(frozen=True)
+class GatewayLog:
+    id: str
+    time: str
+    source: str
+    severity: str
+    message: str
+
+
 def account_from_vnpy(obj: object) -> GatewayAccount:
     balance = float(getattr(obj, "balance", 0.0))
     frozen = float(getattr(obj, "frozen", 0.0))
@@ -116,5 +126,23 @@ def tick_from_vnpy(obj: object) -> GatewayTick:
         last_price=float(getattr(obj, "last_price", 0.0)),
         volume=float(getattr(obj, "volume", 0.0)),
         time=_time_str(getattr(obj, "datetime", "")),
+    )
+
+
+def log_from_vnpy(obj: object) -> GatewayLog:
+    level = int(getattr(obj, "level", 20))
+    message = str(getattr(obj, "msg", ""))
+    if level >= 40:
+        severity = "critical"
+    elif level >= 30 or any(word in message for word in ("失败", "错误", "拒绝")):
+        severity = "warning"
+    else:
+        severity = "info"
+    return GatewayLog(
+        id=f"BROKER-{uuid4().hex[:10].upper()}",
+        time=_time_str(getattr(obj, "time", "")),
+        source=str(getattr(obj, "gateway_name", "") or "broker"),
+        severity=severity,
+        message=message,
     )
 

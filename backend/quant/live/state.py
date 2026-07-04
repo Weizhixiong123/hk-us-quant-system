@@ -4,6 +4,7 @@ from threading import RLock
 
 from quant.live.translate import (
     GatewayAccount,
+    GatewayLog,
     GatewayOrder,
     GatewayPosition,
     GatewayTick,
@@ -21,6 +22,7 @@ class LiveGatewayState:
         self._orders: dict[str, GatewayOrder] = {}
         self._ticks: dict[str, GatewayTick] = {}
         self._trades: dict[str, GatewayTrade] = {}
+        self._logs: list[GatewayLog] = []
 
     def set_connected(self, connected: bool, detail: str = "") -> None:
         with self._lock:
@@ -56,6 +58,11 @@ class LiveGatewayState:
         with self._lock:
             self._ticks[tick.symbol] = tick
 
+    def update_log(self, log: GatewayLog) -> None:
+        with self._lock:
+            self._logs.insert(0, log)
+            self._logs = self._logs[:200]
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -66,5 +73,6 @@ class LiveGatewayState:
                 "orders": list(self._orders.values()),
                 "trades": list(self._trades.values()),
                 "ticks": list(self._ticks.values()),
+                "logs": list(self._logs),
             }
 

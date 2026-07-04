@@ -1,5 +1,5 @@
 import pandas as pd
-from quant.data.loaders import load_daily
+from quant.data.loaders import _to_futu_code, load_daily, load_minutes
 
 
 def _stub_fetch(symbol, market, start, end):
@@ -119,3 +119,34 @@ def test_load_daily_drops_row_with_volume_nan():
     assert len(df) == 2
     # 确认剩余行 volume 均非空
     assert df["volume"].notna().all()
+
+
+# ── 富途分钟线数据源 ────────────────────────────────────────────────────────
+
+
+def test_to_futu_code_converts_project_symbols():
+    assert _to_futu_code("0700.HK", "HK") == "HK.00700"
+    assert _to_futu_code("3690.HK", "HK") == "HK.03690"
+    assert _to_futu_code("AAPL", "US") == "US.AAPL"
+    assert _to_futu_code("HK.00700", "HK") == "HK.00700"
+
+
+def test_load_minutes_normalizes_futu_style_fetcher():
+    def fetcher(symbol, market, start, end, interval):
+        assert (symbol, market, start, end, interval) == ("0700.HK", "HK", "2024-01-01", "2024-01-02", "1m")
+        return pd.DataFrame(
+            {
+                "Open": [100.0, 101.0],
+                "High": [101.0, 102.0],
+                "Low": [99.0, 100.0],
+                "Close": [100.5, 101.5],
+                "Volume": [1000, 1200],
+            },
+            index=pd.to_datetime(["2024-01-01 09:30:00", "2024-01-01 09:31:00"]),
+        )
+
+    df = load_minutes("0700.HK", "HK", "2024-01-01", "2024-01-02", "1m", fetcher=fetcher)
+
+    assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert len(df) == 2
+    assert df.iloc[0]["close"] == 100.5

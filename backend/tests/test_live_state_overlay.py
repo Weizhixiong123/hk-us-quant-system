@@ -6,6 +6,7 @@ from app.services.state import AppState
 from quant.live.state import LiveGatewayState
 from quant.live.translate import (
     GatewayAccount,
+    GatewayLog,
     GatewayOrder,
     GatewayPosition,
     GatewayTick,
@@ -21,6 +22,15 @@ def test_app_state_dashboard_uses_live_gateway_snapshot():
     live_state.update_tick(GatewayTick("AAPL", last_price=101.5, volume=1_000, time="2026-06-23T10:00:00"))
     live_state.update_order(GatewayOrder("O1", "AAPL", "多", "开", 100, 300, 300, "全部成交"))
     live_state.update_trade(GatewayTrade("T1", "O1", "AAPL", "多", "开", 100.5, 300, "2026-06-23T10:01:00+00:00"))
+    live_state.update_log(
+        GatewayLog(
+            "L1",
+            "2026-06-23T10:00:30+00:00",
+            "FUTU_US",
+            "warning",
+            "委托失败：账户不支持交易 US.AAPL",
+        )
+    )
 
     dashboard = AppState(live_state).dashboard()
 
@@ -38,6 +48,8 @@ def test_app_state_dashboard_uses_live_gateway_snapshot():
     assert dashboard.trades[0].side == "buy"
     assert dashboard.trades[0].price == 100.5
     assert dashboard.logs[0].source == "gateway"
+    assert dashboard.logs[1].source == "FUTU_US"
+    assert dashboard.logs[1].severity == "warning"
 
 
 def test_app_state_dashboard_does_not_show_seed_data_without_live_account():
@@ -225,10 +237,30 @@ def test_dashboard_watchlist_marks_submitted_signal_triggered_today(tmp_path):
         db_path=db,
     )
 
-    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+    live_state = LiveGatewayState()
+    live_state.update_position(GatewayPosition("AAPL", "多", 100, 100, 0))
+    watchlist = AppState(live_state, db_path=db).dashboard().watchlist
 
     assert len(watchlist) == 1
     assert watchlist[0].triggered is True
+
+
+def test_dashboard_watchlist_does_not_trigger_rejected_order_without_position(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": True, "reasons": ["日内仓位检查通过"]},
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert len(watchlist) == 1
+    assert watchlist[0].triggered is False
 
 
 def test_dashboard_watchlist_includes_live_selection_events(monkeypatch, tmp_path):
@@ -288,6 +320,39 @@ def test_dashboard_watchlist_labels_manual_selection(monkeypatch, tmp_path):
     assert watchlist[0].tags == ["手动选股", "等待 MACD 开仓信号"]
 
 
+def test_dashboard_watchlist_labels_manual_auto_selection(monkeypatch, tmp_path):
+    from quant.live.settings import save_live_settings
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings(
+        {"intraday_universe": {"selection_mode": "manual", "manual_symbols": [{"symbol": "TSLA", "name": "Tesla", "market": "US", "shortable": True}]}},
+        settings_path,
+    )
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=datetime(2026, 6, 24, 13, 0, tzinfo=timezone.utc),
+        payload={
+            "market": "US",
+            "symbols": ["TSLA", "AAPL"],
+            "selection_mode": "manual+auto",
+            "manual_symbols": ["TSLA"],
+            "auto_symbols": ["AAPL"],
+            "names": {"TSLA": "Tesla"},
+        },
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert [item.symbol for item in watchlist] == ["TSLA", "AAPL"]
+    assert watchlist[0].name == "Tesla"
+    assert watchlist[0].tags == ["手动+筛选", "等待 15m 收线确认"]
+
+
 def test_dashboard_watchlist_only_shows_latest_selection_for_current_mode(monkeypatch, tmp_path):
     from quant.live.settings import save_live_settings
     from quant.live.store import record_live_event
@@ -324,7 +389,30 @@ def test_dashboard_watchlist_only_shows_latest_selection_for_current_mode(monkey
     assert [item.symbol for item in watchlist] == ["TSLA"]
 
 
-def test_dashboard_signals_from_live_events(tmp_path):
+def test_dashboard_watchlist_keeps_latest_selection_per_market(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=datetime(2026, 6, 24, 1, 0, tzinfo=timezone.utc),
+        payload={"market": "HK", "symbols": ["0700.HK"], "selection_mode": "auto"},
+        db_path=db,
+    )
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=datetime(2026, 6, 24, 13, 0, tzinfo=timezone.utc),
+        payload={"market": "US", "symbols": ["AAPL"], "selection_mode": "auto"},
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert [item.symbol for item in watchlist] == ["AAPL", "0700.HK"]
+
+
     from quant.live.store import record_live_event
 
     db = tmp_path / "live.sqlite3"

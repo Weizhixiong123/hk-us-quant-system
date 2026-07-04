@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 
 from app.models.schemas import (
     BacktestRequest,
@@ -31,6 +33,10 @@ router = APIRouter()
 
 def get_state(request: Request) -> AppState:
     return request.app.state.quant_state
+
+
+def _market_time_basis(market: str) -> str:
+    return "美东时间 America/New_York" if market == "US" else "香港时间 Asia/Hong_Kong"
 
 
 @router.get("/health")
@@ -191,6 +197,66 @@ def run_backtest(payload: BacktestRequest, request: Request) -> BacktestResult:
         return get_state(request).run_backtest(payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/backtests/{backtest_id}/trades.csv")
+def download_backtest_trades(backtest_id: str) -> Response:
+    from quant.backtest.store import get_backtest_result
+
+    result = get_backtest_result(backtest_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="backtest not found")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "股票代码",
+        "市场",
+        "方向",
+        "开仓时间(市场当地)",
+        "平仓时间(市场当地)",
+        "时间口径",
+        "开仓价",
+        "平仓价",
+        "仓位金额",
+        "数量",
+        "盈利亏损",
+        "收益率%",
+        "开仓原因",
+        "平仓原因",
+        "最高浮盈%",
+        "最大浮亏%",
+        "股票来源",
+        "仓位来源",
+    ])
+    for trade in result.trade_rows:
+        writer.writerow([
+            trade.symbol,
+            trade.market,
+            "多头" if trade.side == "long" else "空头",
+            trade.entry_time,
+            trade.exit_time,
+            _market_time_basis(trade.market),
+            trade.entry_price,
+            trade.exit_price,
+            trade.position_size,
+            trade.quantity,
+            trade.pnl,
+            trade.pnl_pct,
+            trade.entry_reason,
+            trade.exit_reason,
+            trade.max_favorable_pct,
+            trade.max_adverse_pct,
+            trade.symbols_source,
+            trade.position_source,
+        ])
+
+    filename = f"backtest_{result.strategy_id}_{result.market}_{result.start_date}_{result.end_date}_{result.id}.csv"
+    return Response(
+        content="﻿" + output.getvalue(),
+        media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.websocket("/ws/stream")

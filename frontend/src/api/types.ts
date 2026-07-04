@@ -143,13 +143,36 @@ export interface BacktestRequest {
   start_date: string;
   end_date: string;
   symbols: string[];
+  symbols_mode?: "custom" | "auto";
   initial_capital: number;
+  symbols_source?: string;
+  params_snapshot?: Record<string, ParamValue>;
 }
 
 export interface EquityPoint {
   time: string;
   equity: number;
   drawdown_pct: number;
+}
+
+export interface BacktestTradeRow {
+  symbol: string;
+  market: Market;
+  side: "long" | "short";
+  entry_time: string;
+  exit_time: string;
+  entry_price: number;
+  exit_price: number;
+  position_size: number;
+  quantity: number;
+  pnl: number;
+  pnl_pct: number;
+  position_source: string;
+  symbols_source: string;
+  entry_reason: string;
+  exit_reason: string;
+  max_favorable_pct: number;
+  max_adverse_pct: number;
 }
 
 export interface BacktestResult {
@@ -165,6 +188,7 @@ export interface BacktestResult {
   win_rate_pct: number;
   trades: number;
   equity_curve: EquityPoint[];
+  trade_rows: BacktestTradeRow[];
   notes: string[];
 }
 
@@ -236,6 +260,9 @@ export interface IntradayParamsSettings {
   max_amplitude_pct: number;
   min_price: number;
   min_turnover_rate: number;
+  trailing_enabled: boolean;
+  trailing_start_pct: number;
+  trailing_stop_pct: number;
 }
 
 export interface LiveSettingsSnapshot {

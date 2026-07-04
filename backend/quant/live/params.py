@@ -26,6 +26,9 @@ class IntradayParams:
     max_amplitude_pct: float = 8.0       # 前日振幅上限(%)
     min_price: float = 2.0               # 股价下限(元)
     min_turnover_rate: float = 0.0      # 换手率下限(%)
+    trailing_enabled: bool = True       # 是否开启动态止盈
+    trailing_start_pct: float = 2.0     # 浮盈达到 N% 后启动动态止盈
+    trailing_stop_pct: float = 1.0      # 从最高点回撤 N% 后动态止盈平仓
 
 
 @dataclass(frozen=True)
@@ -62,9 +65,22 @@ def _merge(current, values: Mapping[str, Any], known: dict[str, Any]):
     for key, value in values.items():
         if key not in known:
             continue
-        # field.type is the string "int" under PEP 563 (from __future__ import annotations); keep both forms.
-        changes[key] = int(value) if known[key] in ("int", int) else float(value)
+        # field.type is the string "int" / "bool" under PEP 563 (from __future__ import annotations); keep both forms.
+        if known[key] in ("bool", bool):
+            changes[key] = _as_bool(value)
+        else:
+            changes[key] = int(value) if known[key] in ("int", int) else float(value)
     return replace(current, **changes) if changes else current
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
+    return bool(value)
 
 
 def _validate_intraday(params: IntradayParams) -> None:
@@ -88,6 +104,8 @@ def _validate_intraday(params: IntradayParams) -> None:
         raise ValueError("振幅下限不能大于振幅上限")
     if params.open_after_minutes + params.close_before_minutes >= 390:
         raise ValueError("开盘等待与收盘前停止时间之和必须小于 390 分钟")
+    if not 0 <= params.trailing_start_pct <= 100 or not 0 <= params.trailing_stop_pct <= 100:
+        raise ValueError("动态止盈参数必须在 0 到 100 之间")
     if min(
         params.min_turnover,
         params.min_amplitude_pct,

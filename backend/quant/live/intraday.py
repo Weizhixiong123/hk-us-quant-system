@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Sequence
 
-from app.strategies.macd_intraday import build_intraday_decision
+from app.strategies.macd_intraday import build_intraday_decision, macd
 from quant.live.clock import Market, is_intraday_entry_window
 from quant.screening.intraday_screener import IntradayCandidate, screen_intraday
 
 
 IntradayAction = Literal["wait", "enter_long", "enter_short", "exit_half", "exit_all"]
 PositionSide = Literal["long", "short"]
+IntradayMomentum = Literal["rising", "falling", "mixed"]
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,7 @@ def evaluate_intraday_entry_signal(
 
 def evaluate_intraday_exit_signal(
     position: IntradayPosition,
-    momentum: Literal["rising", "falling", "mixed"],
+    momentum: IntradayMomentum,
 ) -> IntradayExitSignal:
     """三周期 MACD 柱同步反向 → 立即全平。
 
@@ -131,6 +132,34 @@ def evaluate_intraday_exit_signal(
         quantity=0,
         reasons=("日内持仓继续观察",),
     )
+
+
+def three_period_macd_momentum(
+    closes_15m: Sequence[float],
+    closes_5m: Sequence[float],
+    closes_3m: Sequence[float],
+    *,
+    fast_ema: int = 12,
+    slow_ema: int = 26,
+    signal_ema: int = 9,
+) -> IntradayMomentum:
+    """返回15/5/3分钟 MACD 柱体的共同方向，供实盘与回测复用。"""
+    directions: list[IntradayMomentum] = []
+    for closes in (closes_15m, closes_5m, closes_3m):
+        points = macd(
+            closes,
+            fast_period=fast_ema,
+            slow_period=slow_ema,
+            signal_period=signal_ema,
+        )
+        if len(points) < 2 or points[-1].hist == points[-2].hist:
+            return "mixed"
+        directions.append("rising" if points[-1].hist > points[-2].hist else "falling")
+    if all(direction == "rising" for direction in directions):
+        return "rising"
+    if all(direction == "falling" for direction in directions):
+        return "falling"
+    return "mixed"
 
 
 def _exit_all(position: IntradayPosition, reason: str) -> IntradayExitSignal:

@@ -30,7 +30,7 @@ let nameLookupVersion = 0;
 const manualCountLabel = computed(() => `${universe.manual_symbols.length} 只标的`);
 
 function applyUniverse(value: IntradayUniverseSettings): void {
-  universe.selection_mode = value.selection_mode;
+  universe.selection_mode = "manual";
   universe.manual_symbols = value.manual_symbols.map((item) => {
     // name 缺失或为占位(等于 symbol)时,尝试用静态映射回填
     const needsLookup = !item.name || item.name.trim() === "" || item.name.trim() === item.symbol;
@@ -50,12 +50,6 @@ async function loadUniverse(): Promise<void> {
   } finally {
     loading.value = false;
   }
-}
-
-function setMode(mode: IntradayUniverseSettings["selection_mode"]): void {
-  universe.selection_mode = mode;
-  message.value = "";
-  error.value = "";
 }
 
 async function resolveName(symbol: string, market: Market): Promise<string | null> {
@@ -117,7 +111,7 @@ async function saveUniverse(): Promise<void> {
   try {
     const snapshot = await saveLiveSettings({
       intraday_universe: {
-        selection_mode: universe.selection_mode,
+        selection_mode: "manual",
         manual_symbols: universe.manual_symbols.map((item) => ({ ...item }))
       }
     });
@@ -127,9 +121,7 @@ async function saveUniverse(): Promise<void> {
       error.value = `股票池已保存，但运行时重载失败：${result.error ?? "未知错误"}`;
       return;
     }
-    message.value = universe.selection_mode === "manual"
-      ? `手动股票池已生效，共 ${universe.manual_symbols.length} 只`
-      : "已恢复自动盘前筛选";
+    message.value = `候选池已生效：手动 ${universe.manual_symbols.length} 只，并叠加自动筛选`;
     emit("saved");
   } catch (err) {
     error.value = err instanceof Error ? err.message : "股票池保存失败";
@@ -202,8 +194,8 @@ watch(
         <span class="target-mark"><Crosshair :size="22" /></span>
         <div>
           <div class="eyebrow">INTRADAY UNIVERSE</div>
-          <h2>日内选股模式</h2>
-          <p>决定哪些股票进入MACD信号监控，不会直接触发下单。</p>
+          <h2>日内候选池</h2>
+          <p>手动股票和自动筛选会汇总进入MACD信号监控，不会直接触发下单。</p>
         </div>
       </div>
       <button class="reload-button" type="button" :disabled="loading || saving" @click="loadUniverse">
@@ -212,26 +204,12 @@ watch(
       </button>
     </header>
 
-    <div class="mode-switch" role="radiogroup" aria-label="日内选股模式">
-      <button
-        type="button"
-        :class="{ active: universe.selection_mode === 'auto' }"
-        @click="setMode('auto')"
-      >
-        <strong>自动筛选</strong>
-        <span>固定候选池 · 盘前条件过滤</span>
-      </button>
-      <button
-        type="button"
-        :class="{ active: universe.selection_mode === 'manual' }"
-        @click="setMode('manual')"
-      >
-        <strong>手动指定</strong>
-        <span>{{ manualCountLabel }} · 跳过盘前筛选</span>
-      </button>
+    <div class="universe-summary">
+      <strong>当前候选池 = 手动候选 + 自动筛选</strong>
+      <span>{{ manualCountLabel }} · 到达对应市场时自动叠加盘前筛选结果</span>
     </div>
 
-    <div v-if="universe.selection_mode === 'manual'" class="manual-workbench">
+    <div class="manual-workbench">
       <div class="symbol-form" @keydown.enter.prevent="addSymbol">
         <label>
           <span>股票代码</span>
@@ -260,7 +238,7 @@ watch(
         </label>
         <button class="add-symbol" type="button" :disabled="resolvingName" @click="addSymbol">
           <Plus :size="18" />
-          加入股票池
+          加入手动候选
         </button>
       </div>
 
@@ -268,8 +246,8 @@ watch(
         <div v-if="universe.manual_symbols.length === 0" class="empty-ledger">
           <Crosshair :size="28" />
           <div>
-            <strong>手动股票池为空</strong>
-            <span>保存后日内策略不会监控任何股票。</span>
+            <strong>暂无手动候选</strong>
+            <span>未添加手动股票时，候选池仍会使用自动筛选结果。</span>
           </div>
         </div>
         <div v-for="(item, index) in universe.manual_symbols" :key="`${item.market}:${item.symbol}`" class="symbol-ticket">
@@ -287,7 +265,7 @@ watch(
 
       <div class="manual-note">
         <AlertTriangle :size="17" />
-        <span>手动模式只跳过成交额、振幅、股价等盘前筛选；开仓仍需三周期MACD同步并通过仓位、日亏损、PDT及做空校验。</span>
+        <span>手动候选会直接进入当前市场候选池，并与自动筛选结果合并；开仓仍需三周期MACD同步并通过仓位、日亏损、PDT及做空校验。</span>
       </div>
     </div>
 
@@ -383,45 +361,25 @@ p {
   font-weight: 800;
 }
 
-.mode-switch {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.universe-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 18px;
   border-top: 1px solid rgba(24, 32, 31, 0.08);
   border-bottom: 1px solid rgba(24, 32, 31, 0.08);
-  background: rgba(247, 248, 245, 0.72);
-}
-
-.mode-switch button {
-  display: grid;
-  gap: 3px;
-  padding: 13px 18px;
-  border: 0;
-  border-right: 1px solid rgba(24, 32, 31, 0.08);
-  color: var(--ink);
-  background: transparent;
-  text-align: left;
-}
-
-.mode-switch button:last-child {
-  border-right: 0;
-}
-
-.mode-switch button.active {
   color: white;
   background: linear-gradient(120deg, var(--accent-dark), var(--accent));
 }
 
-.mode-switch strong {
+.universe-summary strong {
   font-size: 14px;
 }
 
-.mode-switch span {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.mode-switch button.active span {
+.universe-summary span {
   color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .manual-workbench {

@@ -117,6 +117,8 @@ def execute_exit_order(
             volume=quantity,
             exchange=exchange,
         )
+        if not order_id:
+            raise RuntimeError("券商未返回订单号")
     except Exception as exc:
         return ExecutionResult(
             submitted=False,
@@ -189,6 +191,8 @@ def _submit_entry_order(
             volume=plan.quantity,
             exchange=exchange,
         )
+        if not order_id:
+            raise RuntimeError("券商未返回订单号")
     except Exception as exc:
         return ExecutionResult(
             submitted=False,

@@ -9,6 +9,7 @@ from quant.live.intraday import (
     build_premarket_watchlist,
     evaluate_intraday_entry_signal,
     evaluate_intraday_exit_signal,
+    three_period_macd_momentum,
 )
 from quant.screening.intraday_screener import IntradayCandidate
 
@@ -128,3 +129,12 @@ def test_exit_signal_waits_when_momentum_same_side():
     assert long_wait.action == "wait"
     assert short_wait.action == "wait"
     assert mixed_wait.action == "wait"
+
+
+def test_three_period_macd_momentum_reports_shared_direction():
+    rising = [1.05**index for index in range(60)]
+    falling = [1_000 - 1.05**index for index in range(60)]
+
+    assert three_period_macd_momentum(rising, rising, rising) == "rising"
+    assert three_period_macd_momentum(falling, falling, falling) == "falling"
+    assert three_period_macd_momentum(rising, falling, rising) == "mixed"

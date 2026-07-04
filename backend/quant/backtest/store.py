@@ -81,6 +81,30 @@ def list_backtest_results(
     return [BacktestResult.model_validate(json.loads(row[0])) for row in rows]
 
 
+def get_backtest_result(
+    result_id: str,
+    db_path: DbPath | None = None,
+) -> BacktestResult | None:
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return None
+
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        row = connection.execute(
+            """
+            SELECT payload
+            FROM backtest_results
+            WHERE id = ?
+            """,
+            (result_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+    return BacktestResult.model_validate(json.loads(row[0]))
+
+
 def _resolve_db_path(db_path: DbPath | None) -> Path:
     if db_path is not None:
         return Path(db_path)

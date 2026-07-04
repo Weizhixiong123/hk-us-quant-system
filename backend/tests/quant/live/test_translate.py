@@ -2,11 +2,13 @@ from types import SimpleNamespace
 
 from quant.live.translate import (
     GatewayAccount,
+    GatewayLog,
     GatewayOrder,
     GatewayPosition,
     GatewayTick,
     GatewayTrade,
     account_from_vnpy,
+    log_from_vnpy,
     order_from_vnpy,
     position_from_vnpy,
     tick_from_vnpy,
@@ -69,4 +71,20 @@ def test_tick_from_vnpy_formats_time():
                           datetime=SimpleNamespace(isoformat=lambda: "2026-06-22T10:00:00"))
     t = tick_from_vnpy(obj)
     assert t == GatewayTick(symbol="AAPL", last_price=201.1, volume=1000, time="2026-06-22T10:00:00")
+
+
+def test_log_from_vnpy_maps_broker_message_and_severity():
+    obj = SimpleNamespace(
+        gateway_name="FUTU_US",
+        msg="委托失败：账户不支持交易 US.AAPL",
+        level=20,
+        time=SimpleNamespace(isoformat=lambda: "2026-07-04T01:57:01"),
+    )
+
+    log = log_from_vnpy(obj)
+
+    assert isinstance(log, GatewayLog)
+    assert log.source == "FUTU_US"
+    assert log.severity == "warning"
+    assert log.message.startswith("委托失败")
 

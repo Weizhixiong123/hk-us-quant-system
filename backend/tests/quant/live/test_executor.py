@@ -12,6 +12,7 @@ from quant.live.executor import (
 @dataclass
 class FakeGateway:
     fail: bool = False
+    empty_order_id: bool = False
     orders: list[dict[str, object]] = field(default_factory=list)
 
     def send_order(
@@ -35,7 +36,7 @@ class FakeGateway:
                 "exchange": exchange,
             }
         )
-        return "ORD1"
+        return "" if self.empty_order_id else "ORD1"
 
 
 def test_intraday_entry_submits_when_position_and_risk_pass():
@@ -107,6 +108,23 @@ def test_intraday_entry_handles_gateway_failure():
     assert result.quantity == 300
     assert result.order_id is None
     assert result.reasons == ("下单失败：broker down",)
+
+
+def test_intraday_entry_treats_empty_broker_order_id_as_failure():
+    result = execute_intraday_entry(
+        gateway=FakeGateway(empty_order_id=True),
+        symbol="AAPL",
+        price=33,
+        total_equity=100_000,
+        current_symbols=[],
+        stopped_symbols_today=[],
+        daily_loss_pct=0,
+        lot_size=100,
+    )
+
+    assert result.submitted is False
+    assert result.order_id is None
+    assert result.reasons == ("下单失败：券商未返回订单号",)
 
 
 def test_intraday_limit_ignores_positions_owned_by_other_strategies():

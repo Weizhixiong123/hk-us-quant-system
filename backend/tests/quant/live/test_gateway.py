@@ -1,5 +1,7 @@
 from quant.live.gateway import (
     _clean_symbol,
+    _futu_gateway_name,
+    _futu_route_market,
     _futu_setting_from_config,
     _install_pandas_append_compat,
     _resolve_exchange,
@@ -120,6 +122,46 @@ def test_futu_setting_maps_vnpy_futu_chinese_keys():
         "市场": "HK",
         "环境": "SIMULATE",
     }
+
+    assert _futu_setting_from_config(config, "US")["市场"] == "US"
+
+
+def test_futu_routes_each_market_to_its_own_gateway():
+    assert _futu_gateway_name("HK") == "FUTU_HK"
+    assert _futu_gateway_name("US") == "FUTU_US"
+    assert _futu_route_market("00700.HK", "US") == "HK"
+    assert _futu_route_market("AAPL.US", "HK") == "US"
+    assert _futu_route_market("AAPL", "HK") == "US"
+    assert _futu_route_market("00700", "US") == "HK"
+    assert _futu_route_market("00700", "HK", "NASDAQ") == "US"
+
+
+def test_futu_send_order_uses_market_specific_gateway():
+    from quant.live.config import FutuGatewayConfig
+    from quant.live.gateway import FutuLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    class _MainEngine:
+        def __init__(self):
+            self.calls = []
+
+        def send_order(self, request, gateway_name):
+            self.calls.append((request, gateway_name))
+            return f"{gateway_name}.ORDER"
+
+    config = FutuGatewayConfig(
+        "127.0.0.1", 11111, "SIMULATE", "HK", ("HK", "US"), True, False
+    )
+    gateway = FutuLiveGateway(config, LiveGatewayState())
+    gateway._main_engine = _MainEngine()
+    gateway._gateway_names = {"HK": "FUTU_HK", "US": "FUTU_US"}
+
+    us_order = gateway.send_order("AAPL", "多", "开", 200, 10)
+    hk_order = gateway.send_order("00700.HK", "多", "开", 400, 100)
+
+    assert us_order == "FUTU_US.ORDER"
+    assert hk_order == "FUTU_HK.ORDER"
+    assert [call[1] for call in gateway._main_engine.calls] == ["FUTU_US", "FUTU_HK"]
 
 
 def test_bars_from_vnpy_maps_fields():

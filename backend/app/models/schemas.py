@@ -164,13 +164,36 @@ class BacktestRequest(BaseModel):
     start_date: str
     end_date: str
     symbols: list[str] = Field(default_factory=list)
+    symbols_mode: Literal["custom", "auto"] = "custom"
     initial_capital: float = Field(default=1_000_000, gt=0)
+    params_snapshot: dict[str, ParamValue] = Field(default_factory=dict)
+    symbols_source: str = "request"
 
 
 class EquityPoint(BaseModel):
     time: str
     equity: float
     drawdown_pct: float
+
+
+class BacktestTradeRow(BaseModel):
+    symbol: str
+    market: Market
+    side: Literal["long", "short"] = "long"
+    entry_time: str
+    exit_time: str
+    entry_price: float
+    exit_price: float
+    position_size: float
+    quantity: float
+    pnl: float
+    pnl_pct: float
+    position_source: str = "strategy_param"
+    symbols_source: str = "request"
+    entry_reason: str = ""
+    exit_reason: str = ""
+    max_favorable_pct: float = 0.0
+    max_adverse_pct: float = 0.0
 
 
 class BacktestResult(BaseModel):
@@ -186,6 +209,7 @@ class BacktestResult(BaseModel):
     win_rate_pct: float
     trades: int
     equity_curve: list[EquityPoint] = Field(default_factory=list)
+    trade_rows: list[BacktestTradeRow] = Field(default_factory=list)
     notes: list[str]
 
 
@@ -267,6 +291,9 @@ class IntradayParamsSettings(BaseModel):
     max_amplitude_pct: float = Field(default=8.0, ge=0, le=100, description="前日振幅上限(%)")
     min_price: float = Field(default=2.0, ge=0, description="股价下限(元)")
     min_turnover_rate: float = Field(default=0.0, ge=0, le=100, description="换手率下限(%)")
+    trailing_enabled: bool = True
+    trailing_start_pct: float = Field(default=2.0, ge=0, le=100, description="动态止盈启动浮盈(%)")
+    trailing_stop_pct: float = Field(default=1.0, ge=0, le=100, description="动态止盈回撤(%)")
 
 
 class SymbolNameLookup(BaseModel):

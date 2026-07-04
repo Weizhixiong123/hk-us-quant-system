@@ -17,6 +17,7 @@ from quant.live.intraday import (
     build_premarket_watchlist,
     evaluate_intraday_entry_signal,
     evaluate_intraday_exit_signal,
+    three_period_macd_momentum,
 )
 from quant.live.market_data import BarAggregator
 from quant.live.risk import evaluate_live_order_risk
@@ -32,7 +33,6 @@ from quant.live.trend import (
     evaluate_trend_entry_signal,
     evaluate_trend_exit_signal,
 )
-from quant.indicators.macd import macd
 from quant.data.universe import SymbolInfo, all_symbols
 from quant.screening.intraday_screener import IntradayCandidate
 
@@ -139,10 +139,20 @@ class LiveRuntime:
         self.gateway.subscribe(subscription_symbols)
         if self._manual_intraday_symbols is not None:
             self._seed_history(subscription_symbols)
-            self._record_intraday_selection(
-                [item.symbol for item in self._manual_intraday_symbols],
-                datetime.now(timezone.utc),
-            )
+            now = datetime.now(timezone.utc)
+            for market in self.scheduler.markets:
+                manual_infos = [item for item in self._manual_intraday_symbols if item.market == market]
+                manual_symbols = [item.symbol for item in manual_infos]
+                if manual_symbols:
+                    self._record_intraday_selection(
+                        market=market,
+                        symbols=manual_symbols,
+                        manual_symbols=manual_symbols,
+                        auto_symbols=[],
+                        candidates=[],
+                        manual_infos=manual_infos,
+                        at=now,
+                    )
         self.runtime_state.load_entry_dates_from_events(
             list_live_events(kind="trade", db_path=self.db_path)
         )
@@ -195,7 +205,7 @@ class LiveRuntime:
 
     def handle_action(self, action: SchedulerAction, at: datetime) -> None:
         if action.hook == "intraday_premarket_scan":
-            self._run_intraday_premarket_scan(at)
+            self._run_intraday_premarket_scan(action.market, at)
         elif action.hook == "intraday_3m_signal":
             self._run_intraday_entries(action.market, at)
         elif action.hook == "intraday_3m_exit":
@@ -207,15 +217,20 @@ class LiveRuntime:
         elif action.hook == "portfolio_daily_review":
             self._run_portfolio_daily_review(action.market, at)
 
-    def _run_intraday_premarket_scan(self, at: datetime) -> None:
-        if self._manual_intraday_symbols is not None:
-            symbols = [item.symbol for item in self._manual_intraday_symbols]
-            self.runtime_state.intraday_watchlist = symbols
-            self._record_intraday_selection(symbols, at)
-            return
+    def _run_intraday_premarket_scan(self, market: Market, at: datetime) -> None:
+        manual_infos = [
+            item
+            for item in (self._manual_intraday_symbols or ())
+            if item.market == market
+        ]
+        manual_symbols = [item.symbol for item in manual_infos]
 
-        candidates = self.data_provider.intraday_candidates()
-        symbols = build_premarket_watchlist(
+        candidates = [
+            item
+            for item in self.data_provider.intraday_candidates()
+            if _market_from_symbol(item.symbol) == market
+        ]
+        auto_symbols = build_premarket_watchlist(
             candidates,
             min_turnover=self.params.intraday.min_turnover,
             min_amplitude_pct=self.params.intraday.min_amplitude_pct,
@@ -223,46 +238,61 @@ class LiveRuntime:
             min_price=self.params.intraday.min_price,
             min_turnover_rate=self.params.intraday.min_turnover_rate,
         )
-        self.runtime_state.intraday_watchlist = symbols
+        symbols = _merge_unique([*manual_symbols, *auto_symbols])
+        self.runtime_state.intraday_watchlist = _replace_market_symbols(
+            self.runtime_state.intraday_watchlist,
+            market,
+            symbols,
+        )
         if symbols:
             self.gateway.subscribe(symbols)
             self._seed_history(symbols)
-        record_live_event(
-            kind="selection",
-            strategy_id="intraday_macd",
-            created_at=at,
-            payload={
-                "symbols": symbols,
-                "candidate_count": len(candidates),
-                "score_components": _candidate_components_for(symbols, candidates),
-            },
-            db_path=self.db_path,
+        self._record_intraday_selection(
+            market=market,
+            symbols=symbols,
+            manual_symbols=manual_symbols,
+            auto_symbols=auto_symbols,
+            candidates=candidates,
+            manual_infos=manual_infos,
+            at=at,
         )
 
-    def _record_intraday_selection(self, symbols: list[str], at: datetime) -> None:
-        names = {
-            item.symbol: item.name
-            for item in (self._manual_intraday_symbols or ())
+    def _record_intraday_selection(
+        self,
+        *,
+        market: Market,
+        symbols: list[str],
+        manual_symbols: list[str],
+        auto_symbols: list[str],
+        candidates: list[IntradayCandidate],
+        manual_infos: list[SymbolInfo],
+        at: datetime,
+    ) -> None:
+        names = {item.symbol: item.name for item in manual_infos}
+        mode = _combined_selection_mode(manual_symbols, auto_symbols)
+        payload: dict[str, Any] = {
+            "market": market,
+            "symbols": symbols,
+            "candidate_count": len(candidates),
+            "selection_mode": mode,
+            "manual_symbols": manual_symbols,
+            "auto_symbols": auto_symbols,
+            "names": names,
         }
+        if auto_symbols:
+            payload["score_components"] = _candidate_components_for(auto_symbols, candidates)
         record_live_event(
             kind="selection",
             strategy_id="intraday_macd",
             created_at=at,
-            payload={
-                "symbols": symbols,
-                "candidate_count": len(symbols),
-                "selection_mode": "manual",
-                "names": names,
-                # manual 模式没有筛选过程,score_components 留空,
-                # state.py 读取时会全部走 0.5 fallback
-            },
+            payload=payload,
             db_path=self.db_path,
         )
 
     def _catch_up_premarket_scan(self, at: datetime) -> None:
-        if self.runtime_state.intraday_watchlist:
-            return
         for market in self.scheduler.markets:
+            if _has_market_symbols(self.runtime_state.intraday_watchlist, market):
+                continue
             local = market_time(at, market)
             day = local.date()
             key = (market, day)
@@ -272,7 +302,7 @@ class LiveRuntime:
             catchup_until = scan_at + timedelta(minutes=60)
             if scan_at < local < catchup_until:
                 self._premarket_catchups.add(key)
-                self._run_intraday_premarket_scan(at)
+                self._run_intraday_premarket_scan(market, at)
                 return
 
     def _run_intraday_entries(self, market: Market, at: datetime) -> None:
@@ -392,22 +422,14 @@ class LiveRuntime:
 
     def _three_period_momentum(self, symbol: str) -> str:
         """三周期(15m/5m/3m)MACD 柱方向:全升 rising / 全降 falling / 否则 mixed。"""
-        directions = []
-        for interval in (15, 5, 3):
-            points = macd(
-                [bar.close for bar in self.market_data.interval_bars(symbol, interval, limit=80)],
-                fast_period=self.params.intraday.fast_ema,
-                slow_period=self.params.intraday.slow_ema,
-                signal_period=self.params.intraday.signal_ema,
-            )
-            if len(points) < 2:
-                return "mixed"
-            directions.append("rising" if points[-1].hist > points[-2].hist else "falling")
-        if all(d == "rising" for d in directions):
-            return "rising"
-        if all(d == "falling" for d in directions):
-            return "falling"
-        return "mixed"
+        return three_period_macd_momentum(
+            closes_15m=[bar.close for bar in self.market_data.interval_bars(symbol, 15, limit=80)],
+            closes_5m=[bar.close for bar in self.market_data.interval_bars(symbol, 5, limit=80)],
+            closes_3m=[bar.close for bar in self.market_data.interval_bars(symbol, 3, limit=80)],
+            fast_ema=self.params.intraday.fast_ema,
+            slow_ema=self.params.intraday.slow_ema,
+            signal_ema=self.params.intraday.signal_ema,
+        )
 
     def _run_portfolio_month_end_scan(self, at: datetime) -> None:
         rows = self.data_provider.portfolio_rows()
@@ -741,7 +763,7 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
     data_provider = DefaultLiveDataProvider(
         market_data,
         symbols=symbols,
-        intraday_symbols=manual_symbols if manual_mode else symbols,
+        intraday_symbols=[*manual_symbols, *symbols],
     )
     gateway: RuntimeGateway
     if config.dry_run:
@@ -851,6 +873,35 @@ def _position_side(direction: str) -> str:
 def _market_from_symbol(symbol: str) -> Market:
     value = symbol.upper()
     return "HK" if value.endswith(".HK") or value.startswith("HK.") or value.isdigit() else "US"
+
+
+def _has_market_symbols(symbols: list[str], market: Market) -> bool:
+    return any(_market_from_symbol(symbol) == market for symbol in symbols)
+
+
+def _replace_market_symbols(existing: list[str], market: Market, symbols: list[str]) -> list[str]:
+    kept = [symbol for symbol in existing if _market_from_symbol(symbol) != market]
+    return _merge_unique([*kept, *symbols])
+
+
+def _merge_unique(symbols: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        key = symbol.upper()
+        if not symbol or key in seen:
+            continue
+        seen.add(key)
+        merged.append(symbol)
+    return merged
+
+
+def _combined_selection_mode(manual_symbols: list[str], auto_symbols: list[str]) -> str:
+    if manual_symbols and auto_symbols:
+        return "manual+auto"
+    if manual_symbols:
+        return "manual"
+    return "auto"
 
 
 def _is_close(offset: str) -> bool:

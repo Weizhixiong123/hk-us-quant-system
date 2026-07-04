@@ -23,6 +23,9 @@ INTRADAY_PARAM_DEFAULTS: dict[str, int | float] = {
     "max_amplitude_pct": 8.0,
     "min_price": 2.0,
     "min_turnover_rate": 0.0,
+    "trailing_enabled": 1,
+    "trailing_start_pct": 2.0,
+    "trailing_stop_pct": 1.0,
 }
 
 
@@ -195,7 +198,10 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     }
     for key, default in INTRADAY_PARAM_DEFAULTS.items():
         value = intraday_params.get(key, default)
-        intraday_params[key] = int(value) if key in integer_keys else float(value)
+        if key == "trailing_enabled":
+            intraday_params[key] = bool(value)
+        else:
+            intraday_params[key] = int(value) if key in integer_keys else float(value)
 
     return settings
 
@@ -299,6 +305,8 @@ def _validate(settings: Mapping[str, Any]) -> None:
         raise ValueError("振幅下限不能大于振幅上限")
     if intraday["open_after_minutes"] + intraday["close_before_minutes"] >= 390:
         raise ValueError("开盘等待与收盘前停止时间之和必须小于 390 分钟")
+    if not 0 <= intraday["trailing_start_pct"] <= 100 or not 0 <= intraday["trailing_stop_pct"] <= 100:
+        raise ValueError("动态止盈参数必须在 0 到 100 之间")
     if min(
         intraday["min_turnover"],
         intraday["min_amplitude_pct"],
