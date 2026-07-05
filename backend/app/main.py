@@ -53,10 +53,30 @@ def create_app() -> FastAPI:
     )
     app.include_router(router, prefix="/api")
 
+    # 把 422 校验失败的具体字段级错误打到日志,便于定位是哪条 manual_symbol / 哪个字段不合规。
+    # 同时把 detail 原样返回给前端,前端可直接展示。
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+    import logging as _logging
+
+    _log = _logging.getLogger("app.api.routes")
+
+    @app.exception_handler(RequestValidationError)
+    async def _log_unprocessable(request: Request, exc: RequestValidationError):
+        _log.warning(
+            "422 Unprocessable Content %s %s: %s",
+            request.method,
+            request.url.path,
+            exc.errors(),
+        )
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
     # 临时诊断:把未处理异常的完整 traceback 直接返回到响应,方便在浏览器排查 500。
-    # 定位修复后应移除这段。
+    # 定位修复后应移除这段。 RequestValidationError 由上面的专用 handler 处理。
     @app.exception_handler(Exception)
     async def _debug_traceback_handler(request: Request, exc: Exception):
+        if isinstance(exc, RequestValidationError):
+            raise exc
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         return PlainTextResponse(detail, status_code=500)
 

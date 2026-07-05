@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 
@@ -29,6 +30,7 @@ from quant.data.symbol_names import lookup_symbol_name
 from quant.live.settings import load_live_settings, public_live_settings, save_live_settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def get_state(request: Request) -> AppState:
@@ -226,6 +228,7 @@ def download_backtest_trades(backtest_id: str) -> Response:
         "平仓原因",
         "最高浮盈%",
         "最大浮亏%",
+        "交易动作",
         "股票来源",
         "仓位来源",
     ])
@@ -247,6 +250,7 @@ def download_backtest_trades(backtest_id: str) -> Response:
             trade.exit_reason,
             trade.max_favorable_pct,
             trade.max_adverse_pct,
+            trade.action_label or trade.action,
             trade.symbols_source,
             trade.position_source,
         ])

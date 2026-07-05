@@ -31,13 +31,22 @@ const manualCountLabel = computed(() => `${universe.manual_symbols.length} 只�
 
 function applyUniverse(value: IntradayUniverseSettings): void {
   universe.selection_mode = "manual";
-  universe.manual_symbols = value.manual_symbols.map((item) => {
-    // name 缺失或为占位(等于 symbol)时,尝试用静态映射回填
-    const needsLookup = !item.name || item.name.trim() === "" || item.name.trim() === item.symbol;
-    if (!needsLookup) return { ...item };
-    const name = lookupSymbolName(item.symbol, item.market);
-    return { ...item, name: name ?? item.name };
-  });
+  universe.manual_symbols = value.manual_symbols
+    .filter((item) => {
+      // 兜底过滤掉历史持久化留下的脏数据,避免整批 PUT 时被一条不合规记录 422 回滚
+      if (!item || !item.symbol || !item.market) return false;
+      if (item.market === "HK" && !/^\d{4}\.HK$/.test(item.symbol)) return false;
+      if (item.market === "US" && /\.HK$/i.test(item.symbol)) return false;
+      if (item.symbol.length > 24) return false;
+      return true;
+    })
+    .map((item) => {
+      // name 缺失或为占位(等于 symbol)时,尝试用静态映射回填
+      const needsLookup = !item.name || item.name.trim() === "" || item.name.trim() === item.symbol;
+      if (!needsLookup) return { ...item, name: item.name.slice(0, 64) };
+      const name = lookupSymbolName(item.symbol, item.market);
+      return { ...item, name: (name ?? item.name).slice(0, 64) };
+    });
 }
 
 async function loadUniverse(): Promise<void> {
@@ -71,6 +80,16 @@ async function addSymbol(): Promise<void> {
     error.value = "请输入有效股票代码";
     return;
   }
+  // 一致性兜底:HK 市场必须是 NNNN.HK,US 市场不能带 .HK 后缀
+  // 之前 normalizeSymbol 没清理 US 分支里残留的 .HK,会导致整批 422 回滚
+  if (market === "HK" && !/^\d{4}\.HK$/.test(symbol)) {
+    error.value = `港股代码格式应为 NNNN.HK(4 位数字)`;
+    return;
+  }
+  if (market === "US" && /\.HK$/i.test(symbol)) {
+    error.value = `代码 ${symbol} 属于港股,请把市场切换到 HK`;
+    return;
+  }
   if (universe.manual_symbols.some((item) => item.symbol === symbol && item.market === draft.market)) {
     error.value = `${symbol} 已在手动股票池中`;
     return;
@@ -84,6 +103,10 @@ async function addSymbol(): Promise<void> {
   if (!name) {
     error.value = `未找到 ${symbol} 的股票名称，请检查代码或手工填写名称`;
     return;
+  }
+  if (name.length > 64) {
+    // 后端 ManualSymbol.name 限长 64,超出会整批 422 回滚
+    name = name.slice(0, 64);
   }
   universe.manual_symbols.push({
     symbol,
