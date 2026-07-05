@@ -3670,6 +3670,30 @@ html {
   color: var(--loss);
 }
 
+.backtest-note-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgba(21, 155, 141, 0.16);
+  border-radius: 10px;
+  color: var(--ink);
+  background: rgba(21, 155, 141, 0.06);
+}
+
+.backtest-note-panel strong {
+  font-size: 13px;
+}
+
+.backtest-note-panel ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .backtest-trade-detail {
   overflow: hidden;
   border: 1px solid rgba(24, 32, 31, 0.08);

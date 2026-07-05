@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .venv/
 venv/
 
@@ -14,12 +15,14 @@ dist/
 .env
 .env.*
 !.env.example
+.claude/
 
 # Runtime output
 *.log
 *.sqlite3
 *.db
 backend/data/*.json
+backend/data/backtest-cache/
 
 # Local release packages
 release/

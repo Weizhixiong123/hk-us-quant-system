@@ -11,7 +11,7 @@ from app.strategies.trend_portfolio import (
     screen_symbol,
 )
 from quant.data.resample import resample_ohlcv
-from quant.indicators.macd import macd
+from quant.indicators.macd import has_top_divergence, macd
 from quant.indicators.trend import max_drawdown_pct, sma
 
 
@@ -32,6 +32,7 @@ def build_trend_snapshot(
     w_low = weekly["low"].tolist()
 
     m_macd = macd(m_close)
+    w_macd = macd(w_close)
     price = _last(daily["close"].tolist())
 
     def safe_sma(values, period):
@@ -61,7 +62,34 @@ def build_trend_snapshot(
         weekly_lows_rising=rising(w_low),
         max_drawdown_3m_pct=max_drawdown_pct(daily["close"].tolist()[-63:]),
         short_term_gain_pct=_recent_gain_pct(daily, days=20),
+        weekly_macd_hist_positive=_macd_hist_positive(w_macd),
+        weekly_macd_hist_healthy=_macd_hist_healthy(w_macd),
+        weekly_macd_top_divergence=_top_divergence(w_high, w_macd),
+        monthly_macd_top_divergence=_top_divergence(monthly["high"].tolist(), m_macd),
     )
+
+
+def _macd_hist_positive(points) -> bool:
+    return bool(points and (points[-1].hist > 0 or (points[-1].dif > 0 and points[-1].dea > 0)))
+
+
+def _macd_hist_healthy(points, bars: int = 3, shrink_tolerance: float = 0.35) -> bool:
+    if len(points) < bars:
+        return False
+    hist = [float(point.hist) for point in points[-bars:]]
+    if points[-1].dif > 0 and points[-1].dea > 0:
+        return True
+    if any(value <= 0 for value in hist):
+        return False
+    # 红柱允许温和回落，但最后一根不能比窗口最高值萎缩太多。
+    return hist[-1] >= max(hist) * 0.2
+
+
+def _top_divergence(highs: list[float], points) -> bool:
+    if len(highs) < 8 or len(points) < 8:
+        return False
+    hist = [float(point.hist) for point in points]
+    return has_top_divergence(highs, hist, lookback=min(28, len(highs)))
 
 
 def _recent_gain_pct(daily: pd.DataFrame, days: int) -> float:

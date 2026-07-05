@@ -24,6 +24,10 @@ class TrendSnapshot:
     weekly_lows_rising: bool
     max_drawdown_3m_pct: float
     short_term_gain_pct: float
+    weekly_macd_hist_positive: bool = True
+    weekly_macd_hist_healthy: bool = True
+    weekly_macd_top_divergence: bool = False
+    monthly_macd_top_divergence: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,9 @@ def screen_symbol(
         "月线 MACD 零轴上方": trend.macd_month_dif > 0 and trend.macd_month_dea > 0,
         "周线均线多头排列": trend.ma5_week > trend.ma10_week > trend.ma20_week,
         "周线高低点抬高": trend.weekly_highs_rising and trend.weekly_lows_rising,
+        "周线 MACD 红柱健康": trend.weekly_macd_hist_positive and trend.weekly_macd_hist_healthy,
+        "周线无 MACD 顶背离": not trend.weekly_macd_top_divergence,
+        "月线无 MACD 顶背离": not trend.monthly_macd_top_divergence,
         "近 2 季盈利": fundamentals.positive_profit_quarters >= 2,
         "无重大基本面风险": not fundamentals.has_major_risk,
         "流通市值达标": fundamentals.market_cap >= min_cap,

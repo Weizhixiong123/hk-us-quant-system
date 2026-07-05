@@ -121,13 +121,11 @@ def _active_selection_symbols(payload: dict, current_manual_keys: set[str]) -> l
     manual_symbols = [str(symbol) for symbol in payload.get("manual_symbols", []) if str(symbol)]
     auto_symbols = [str(symbol) for symbol in payload.get("auto_symbols", []) if str(symbol)]
     if manual_symbols or auto_symbols:
-        active_manual = (
-            [symbol for symbol in manual_symbols if _symbol_key(symbol) in current_manual_keys]
-            if current_manual_keys
-            else manual_symbols
-        )
+        active_manual = [
+            symbol for symbol in manual_symbols if _symbol_key(symbol) in current_manual_keys
+        ]
         return _merge_unique_symbols(active_manual + auto_symbols)
-    if str(payload.get("selection_mode", "")) == "manual" and current_manual_keys:
+    if str(payload.get("selection_mode", "")) == "manual":
         return [symbol for symbol in symbols if _symbol_key(symbol) in current_manual_keys]
     return symbols
 
@@ -860,7 +858,7 @@ class AppState:
                 side=_order_side(item.direction, item.offset),
                 quantity=int(item.volume),
                 price=float(item.price),
-                status=_order_status(item.status),
+                status=_order_status(item.status, item.traded, item.volume),
                 created_at=self._now(),
             )
             for item in snapshot.get("orders", [])
@@ -1166,13 +1164,14 @@ def _order_side(direction: str, offset: str) -> str:
     return "short" if is_short_direction else "buy"
 
 
-def _order_status(status: str) -> str:
+def _order_status(status: str, traded: float = 0.0, volume: float = 0.0) -> str:
     value = status.upper()
     if "拒" in status or "REJECT" in value:
         return "rejected"
     if "撤" in status or "CANCEL" in value:
         return "cancelled"
-    if "成交" in status or "FILLED" in value or "ALLTRADED" in value:
+    reports_filled = "成交" in status or "FILLED" in value or "ALLTRADED" in value
+    if reports_filled and volume > 0 and traded >= volume:
         return "filled"
     return "submitted"
 

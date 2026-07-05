@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ChevronsLeft,
   ClipboardList,
-  Cog,
   Database,
   FileText,
   Home,
@@ -15,7 +14,6 @@ import {
   ListChecks,
   Package,
   Radio,
-  ReceiptText,
   RefreshCw,
   Settings2,
   ShieldCheck,
@@ -134,11 +132,8 @@ const navItems: NavItem[] = [
   { label: "策略管理", icon: ClipboardList, view: "strategies" },
   { label: "候选股票", icon: ListChecks, view: "candidates" },
   { label: "持仓管理", icon: Package, view: "positions" },
-  { label: "订单管理", icon: ReceiptText },
   { label: "成交记录", icon: Database, view: "trades" },
-  { label: "风控中心", icon: ShieldCheck },
-  { label: "运行日志", icon: FileText, view: "logs" },
-  { label: "系统设置", icon: Cog }
+  { label: "运行日志", icon: FileText, view: "logs" }
 ];
 
 const appYear = new Date().getFullYear();

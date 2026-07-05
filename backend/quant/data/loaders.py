@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from collections import deque
+from threading import Lock
 from typing import Callable
 
 import pandas as pd
@@ -27,11 +30,53 @@ _FUTU_INTERVALS = {
 }
 
 
+class _SlidingWindowRateLimiter:
+    def __init__(
+        self,
+        max_calls: int,
+        window_seconds: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.max_calls = max_calls
+        self.window_seconds = window_seconds
+        self.clock = clock
+        self.sleeper = sleeper
+        self._calls: deque[float] = deque()
+        self._lock = Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            while True:
+                now = self.clock()
+                while self._calls and now - self._calls[0] >= self.window_seconds:
+                    self._calls.popleft()
+                if len(self._calls) < self.max_calls:
+                    self._calls.append(now)
+                    return
+                self.sleeper(max(self.window_seconds - (now - self._calls[0]) + 0.05, 0.05))
+
+    def cooldown(self) -> None:
+        with self._lock:
+            self.sleeper(self.window_seconds + 0.05)
+            self._calls.clear()
+
+
+_FUTU_HISTORY_LIMITER = _SlidingWindowRateLimiter(60, 30.0)
+
+
 def _log_data_loader(message: str) -> None:
     print(f"[DATA] {message}", flush=True)
 
 
 def _default_fetcher(symbol: str, market: str, start: str, end: str) -> pd.DataFrame:
+    """默认日线数据源：富途历史日线（前复权），与分钟线共用同一数据源。"""
+    return _fetch_futu_kline(symbol, market, start, end, "K_DAY")
+
+
+def _free_source_fetcher(symbol: str, market: str, start: str, end: str) -> pd.DataFrame:
+    """免费源日线（美股 yfinance / 港股 akshare），保留作为可注入的备用数据源。"""
     if market == "US":
         import yfinance as yf
 
@@ -49,21 +94,31 @@ def _default_fetcher(symbol: str, market: str, start: str, end: str) -> pd.DataF
 
 
 def _default_minute_fetcher(symbol: str, market: str, start: str, end: str, interval: str) -> pd.DataFrame:
-    return _fetch_futu_minutes(symbol, market, start, end, interval)
+    ktype_name = _FUTU_INTERVALS[interval]
+    resample_rule = "2min" if interval == "2m" else None
+    return _fetch_futu_kline(symbol, market, start, end, ktype_name, resample_rule)
 
 
-def _fetch_futu_minutes(symbol: str, market: str, start: str, end: str, interval: str) -> pd.DataFrame:
+def _fetch_futu_kline(
+    symbol: str,
+    market: str,
+    start: str,
+    end: str,
+    ktype_name: str,
+    resample_rule: str | None = None,
+) -> pd.DataFrame:
+    """通用富途历史K线拉取，供日线（K_DAY）与分钟线（K_1M/K_5M…）共用。"""
     try:
         from futu import AuType, KLType, OpenQuoteContext, RET_OK
     except ImportError as exc:
-        raise RuntimeError("未安装 futu-api，无法使用富途分钟线数据源。请先执行 pip install futu-api。") from exc
+        raise RuntimeError("未安装 futu-api，无法使用富途行情数据源。请先执行 pip install futu-api。") from exc
 
     config = load_futu_config()
     code = _to_futu_code(symbol, market)
-    ktype = _to_futu_ktype(interval, KLType)
+    ktype = getattr(KLType, ktype_name)
     _log_data_loader(
-        f"富途分钟线开始 code={code} original_symbol={symbol} market={market} "
-        f"interval={interval} range={start}~{end} host={config.host}:{config.port}"
+        f"富途K线开始 code={code} original_symbol={symbol} market={market} "
+        f"ktype={ktype_name} range={start}~{end} host={config.host}:{config.port}"
     )
     quote_ctx = OpenQuoteContext(host=config.host, port=config.port)
     try:
@@ -71,20 +126,27 @@ def _fetch_futu_minutes(symbol: str, market: str, start: str, end: str, interval
         page_req_key = None
         page_count = 0
         while True:
-            ret, data, page_req_key = quote_ctx.request_history_kline(
-                code,
-                start=start,
-                end=end,
-                ktype=ktype,
-                autype=AuType.QFQ,
-                page_req_key=page_req_key,
-            )
+            for attempt in range(3):
+                _FUTU_HISTORY_LIMITER.wait()
+                ret, data, next_page_req_key = quote_ctx.request_history_kline(
+                    code,
+                    start=start,
+                    end=end,
+                    ktype=ktype,
+                    autype=AuType.QFQ,
+                    page_req_key=page_req_key,
+                )
+                if ret == RET_OK or not _is_history_rate_limit_error(data) or attempt == 2:
+                    break
+                _log_data_loader(f"富途K线触发限频，等待30秒后重试 code={code} attempt={attempt + 1}/3")
+                _FUTU_HISTORY_LIMITER.cooldown()
             if ret != RET_OK:
-                _log_data_loader(f"富途分钟线失败 code={code} error={data}")
-                raise RuntimeError(f"富途分钟线下载失败 {code}: {data}")
+                _log_data_loader(f"富途K线失败 code={code} error={data}")
+                raise RuntimeError(f"富途K线下载失败 {code}: {data}")
+            page_req_key = next_page_req_key
             frames.append(data)
             page_count += 1
-            _log_data_loader(f"富途分钟线分页完成 code={code} page={page_count} rows={len(data)}")
+            _log_data_loader(f"富途K线分页完成 code={code} page={page_count} rows={len(data)}")
             if page_req_key is None:
                 break
         if not frames:
@@ -108,10 +170,15 @@ def _fetch_futu_minutes(symbol: str, market: str, start: str, end: str, interval
     )
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.set_index("Date")
-    if interval == "2m":
-        df = _resample_futu_minutes(df, "2min")
-    _log_data_loader(f"富途分钟线完成 code={code} rows={len(df)} pages={page_count}")
+    if resample_rule:
+        df = _resample_futu_minutes(df, resample_rule)
+    _log_data_loader(f"富途K线完成 code={code} rows={len(df)} pages={page_count}")
     return df
+
+
+def _is_history_rate_limit_error(error: object) -> bool:
+    message = str(error).lower()
+    return any(token in message for token in ("频率", "每30秒最多60次", "frequency", "rate limit"))
 
 
 def _to_futu_code(symbol: str, market: str) -> str:
@@ -126,11 +193,6 @@ def _to_futu_code(symbol: str, market: str) -> str:
         code = normalized.removesuffix(".US")
         return f"US.{code}"
     raise ValueError(f"unknown market: {market}")
-
-
-def _to_futu_ktype(interval: str, kl_type: object) -> object:
-    name = _FUTU_INTERVALS[interval]
-    return getattr(kl_type, name)
 
 
 def _resample_futu_minutes(df: pd.DataFrame, rule: str) -> pd.DataFrame:

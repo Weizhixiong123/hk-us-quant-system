@@ -48,13 +48,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggle: [StrategyConfig];
   updateParam: [StrategyConfig, string, ParamValue];
-  backtest: [strategyId: string, market: Market, symbolsMode: "custom" | "auto"];
+  backtest: [strategyId: string, market: Market];
 }>();
 
 const paramDraft = reactive<Record<string, ParamValue>>({});
 const activeParamKey = ref<string | null>(null);
 const selectedBacktestMarket = ref<Market>(props.strategy.markets[0] ?? "HK");
-const selectedBacktestSymbolsMode = ref<"custom" | "auto">("custom");
 const visibleTradeCount = ref(10);
 const pendingParams = reactive<Record<string, ParamValue>>({});
 const pendingTimers = new Map<string, number>();
@@ -411,30 +410,12 @@ onBeforeUnmount(() => pendingTimers.forEach((timer) => window.clearTimeout(timer
                 {{ market === "HK" ? "港股" : "美股" }}
               </button>
             </div>
-            <div class="strategy-market-switch" role="group" aria-label="回测股票来源">
-              <button
-                type="button"
-                :class="{ active: selectedBacktestSymbolsMode === 'custom' }"
-                :disabled="backtestRunning"
-                @click="selectedBacktestSymbolsMode = 'custom'"
-              >
-                自选
-              </button>
-              <button
-                type="button"
-                :class="{ active: selectedBacktestSymbolsMode === 'auto' }"
-                :disabled="backtestRunning"
-                @click="selectedBacktestSymbolsMode = 'auto'"
-              >
-                自动
-              </button>
-            </div>
             <button
               class="text-button strategy-backtest"
               type="button"
               :title="`运行${selectedBacktestMarket === 'HK' ? '港股' : '美股'}回测`"
               :disabled="backtestRunning"
-              @click="emit('backtest', strategy.id, selectedBacktestMarket, selectedBacktestSymbolsMode)"
+              @click="emit('backtest', strategy.id, selectedBacktestMarket)"
             >
               <PlayCircle :size="16" />
               <span>{{ backtestRunning ? "回测中..." : currentBacktest ? "重新回测" : "运行回测" }}</span>
@@ -450,7 +431,7 @@ onBeforeUnmount(() => pendingTimers.forEach((timer) => window.clearTimeout(timer
           <p class="eyebrow">BACKTEST EXPORT</p>
           <h3>回测 CSV 报告</h3>
           <p>
-            当前市场：{{ selectedBacktestMarket === "HK" ? "港股" : "美股" }}。股票来源：{{ selectedBacktestSymbolsMode === "custom" ? "自选候选池" : "自动选股策略" }}。完成后可下载 Excel 可打开的 CSV。
+            当前市场：{{ selectedBacktestMarket === "HK" ? "港股" : "美股" }}。股票来源：当前候选池。完成后可下载 Excel 可打开的 CSV。
           </p>
         </div>
         <a
@@ -497,6 +478,16 @@ onBeforeUnmount(() => pendingTimers.forEach((timer) => window.clearTimeout(timer
             <strong>{{ currentBacktest.trade_rows.length || currentBacktest.trades }}</strong>
             <small>交易明细</small>
           </span>
+        </div>
+
+        <div
+          v-if="currentBacktest.notes.length"
+          class="backtest-note-panel"
+        >
+          <strong>回测诊断</strong>
+          <ul>
+            <li v-for="note in currentBacktest.notes" :key="note">{{ note }}</li>
+          </ul>
         </div>
 
         <section class="backtest-trade-detail">

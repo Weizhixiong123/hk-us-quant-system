@@ -98,3 +98,31 @@ def test_portfolio_rows_use_real_fundamentals():
     rows = provider.portfolio_rows()
     assert rows[0][3].market_cap == 6e9
     assert rows[0][3].positive_profit_quarters == 4
+
+
+def test_portfolio_rows_refresh_full_market_universe():
+    provider = DefaultLiveDataProvider(
+        market_data=BarAggregator(),
+        symbols=[SymbolInfo("AAPL", "Apple", "US")],
+        daily_loader=_daily,
+        today=date(2026, 6, 23),
+        fundamentals_source=lambda s, m: None,
+        universe_source=lambda market: [SymbolInfo("MSFT", "Microsoft", "US")] if market == "US" else [],
+        markets=("US",),
+    )
+
+    rows = provider.portfolio_rows()
+
+    assert [row[0] for row in rows] == ["MSFT"]
+
+
+def test_intraday_candidates_can_come_from_realtime_full_market_snapshot():
+    from quant.screening.intraday_screener import IntradayCandidate
+
+    expected = IntradayCandidate("TSLA", "US", 10_000_000, 3.0, 200.0, False, False, False)
+    provider = DefaultLiveDataProvider(
+        market_data=BarAggregator(),
+        intraday_candidate_source=lambda market=None: [expected],
+    )
+
+    assert provider.intraday_candidates() == [expected]

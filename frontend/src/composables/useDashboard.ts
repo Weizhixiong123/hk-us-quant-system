@@ -3,6 +3,7 @@ import {
   createBacktest,
   fetchBacktests,
   fetchDashboard,
+  fetchLiveSettings,
   streamUrl,
   toggleStrategy as toggleStrategyRequest,
   updateStrategyParams
@@ -10,6 +11,7 @@ import {
 import type {
   BacktestResult,
   DashboardSnapshot,
+  LiveSettingsSnapshot,
   Market,
   ParamValue,
   StrategyConfig,
@@ -32,6 +34,7 @@ function backfillName<T extends { symbol: string; name: string; market: Market }
 
 export function useDashboard() {
   const dashboard = ref<DashboardSnapshot | null>(null);
+  const liveSettings = ref<LiveSettingsSnapshot | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
   const streamState = ref<"connecting" | "live" | "offline">("offline");
@@ -61,7 +64,12 @@ export function useDashboard() {
     loading.value = true;
     error.value = null;
     try {
-      dashboard.value = await fetchDashboard();
+      const [dashboardSnapshot, settingsSnapshot] = await Promise.all([
+        fetchDashboard(),
+        fetchLiveSettings().catch(() => null)
+      ]);
+      dashboard.value = dashboardSnapshot;
+      liveSettings.value = settingsSnapshot;
     } catch (err) {
       error.value = err instanceof Error ? err.message : "加载失败";
     } finally {
@@ -96,7 +104,7 @@ export function useDashboard() {
     }
   }
 
-  async function runBacktest(strategyId: string, market: Market, symbolsMode: "custom" | "auto" = "custom") {
+  async function runBacktest(strategyId: string, market: Market) {
     error.value = null;
     backtestError.value = null;
     backtestRunning.value = true;
@@ -104,16 +112,16 @@ export function useDashboard() {
     backtestProgressLabel.value = "提交回测任务";
     startBacktestProgress();
     try {
-      const range = backtestDateRange();
+      const range = backtestDateRange(strategyId);
       const result = await createBacktest({
         strategy_id: strategyId,
         market,
         start_date: range.startDate,
         end_date: range.endDate,
-        symbols: symbolsMode === "custom" ? backtestSymbols(strategyId, market) : [],
-        symbols_mode: symbolsMode,
+        symbols: backtestSymbols(strategyId, market),
+        symbols_mode: "custom",
         initial_capital: 1_000_000,
-        symbols_source: backtestSymbolsSource(strategyId, market, symbolsMode),
+        symbols_source: backtestSymbolsSource(strategyId, market),
         params_snapshot: strategies.value.find((strategy) => strategy.id === strategyId)?.params ?? {}
       });
       stopBacktestProgress();
@@ -161,10 +169,14 @@ export function useDashboard() {
     }
   }
 
-  function backtestDateRange(): { startDate: string; endDate: string } {
+  function backtestDateRange(strategyId: string): { startDate: string; endDate: string } {
     const end = new Date();
     const start = new Date(end);
-    start.setDate(start.getDate() - 60);
+    if (strategyId === "trend_portfolio") {
+      start.setMonth(start.getMonth() - 6);
+    } else {
+      start.setDate(start.getDate() - 60);
+    }
     return {
       startDate: start.toISOString().slice(0, 10),
       endDate: end.toISOString().slice(0, 10)
@@ -173,21 +185,21 @@ export function useDashboard() {
 
   function backtestSymbols(strategyId: string, market: Market): string[] {
     const rows = watchlist.value.filter((item) => item.market === market);
-    const preferred = strategyId === "intraday_macd"
-      ? rows.filter((item) => item.tags.some((tag) => ["盘前筛选", "手动选股", "等待 15m 收线确认"].includes(tag)))
-      : rows;
+    const manualRows = liveSettings.value?.intraday_universe.manual_symbols.filter((item) => item.market === market) ?? [];
+    if (strategyId === "trend_portfolio") {
+      return [...new Set((manualRows.length > 0 ? manualRows : rows).map((item) => item.symbol))];
+    }
+    const preferred = rows.filter((item) => item.tags.some((tag) => ["盘前筛选", "手动选股", "等待 15m 收线确认"].includes(tag)));
     return [...new Set((preferred.length > 0 ? preferred : rows).map((item) => item.symbol))];
   }
 
-  function backtestSymbolsSource(strategyId: string, market: Market, symbolsMode: "custom" | "auto"): string {
-    if (symbolsMode === "auto") {
-      return "自动选股策略";
-    }
-    if (strategyId !== "intraday_macd") {
-      return "自选候选池";
-    }
+  function backtestSymbolsSource(strategyId: string, market: Market): string {
     const rows = watchlist.value.filter((item) => item.market === market);
-    return rows.some((item) => item.tags.includes("手动选股"))
+    const manualRows = liveSettings.value?.intraday_universe.manual_symbols.filter((item) => item.market === market) ?? [];
+    if (strategyId !== "intraday_macd") {
+      return manualRows.length > 0 ? "手动自选候选池" : "自选候选池";
+    }
+    return rows.some((item) => item.tags.includes("手动选股")) || manualRows.length > 0
       ? "自选候选池（含手动候选）"
       : "自选候选池";
   }

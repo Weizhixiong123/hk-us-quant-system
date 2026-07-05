@@ -55,11 +55,8 @@ def load_fundamentals(
 
 
 def default_fundamentals_source(symbol: str, market: str) -> RawFundamentals | None:
-    # 真实网络实现：正确性以 Plan 3 本地实测为准（接口字段名可能需微调）。
-    if market == "US":
+    if market in {"US", "HK"}:
         return _yfinance_fundamentals(symbol)
-    if market == "HK":
-        return _akshare_fundamentals(symbol)
     return None
 
 
@@ -78,13 +75,3 @@ def _yfinance_fundamentals(symbol: str) -> RawFundamentals | None:
             if value is not None and float(value) > 0:
                 positive += 1
     return RawFundamentals(market_cap=market_cap, positive_profit_quarters=positive)
-
-
-def _akshare_fundamentals(symbol: str) -> RawFundamentals | None:
-    # 港股基本面接口在 Plan 3 本地确认 akshare 函数名与字段；
-    # 取不到时返回 None（→ 安全侧，screen 不通过），不阻塞链路。
-    try:
-        import akshare as ak  # noqa: F401
-    except Exception:
-        return None
-    return None

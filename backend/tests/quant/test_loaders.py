@@ -1,5 +1,32 @@
 import pandas as pd
-from quant.data.loaders import _to_futu_code, load_daily, load_minutes
+from quant.data.loaders import (
+    _SlidingWindowRateLimiter,
+    _is_history_rate_limit_error,
+    _to_futu_code,
+    load_daily,
+    load_minutes,
+)
+
+
+def test_history_rate_limiter_waits_after_window_is_full():
+    now = [0.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    limiter = _SlidingWindowRateLimiter(2, 10.0, clock=lambda: now[0], sleeper=sleep)
+    limiter.wait()
+    limiter.wait()
+    limiter.wait()
+
+    assert sleeps == [10.05]
+
+
+def test_history_rate_limit_error_detection():
+    assert _is_history_rate_limit_error("获取历史K线频率太高，请求失败，每30秒最多60次")
+    assert not _is_history_rate_limit_error("股票代码不存在")
 
 
 def _stub_fetch(symbol, market, start, end):

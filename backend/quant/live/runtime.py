@@ -207,6 +207,8 @@ class LiveRuntime:
         if action.hook == "intraday_premarket_scan":
             self._run_intraday_premarket_scan(action.market, at)
         elif action.hook == "intraday_3m_signal":
+            if self._manual_intraday_symbols is None:
+                self._run_intraday_premarket_scan(action.market, at)
             self._run_intraday_entries(action.market, at)
         elif action.hook == "intraday_3m_exit":
             self._run_intraday_exits(action.market, at)
@@ -225,11 +227,9 @@ class LiveRuntime:
         ]
         manual_symbols = [item.symbol for item in manual_infos]
 
-        candidates = [
-            item
-            for item in self.data_provider.intraday_candidates()
-            if _market_from_symbol(item.symbol) == market
-        ]
+        market_loader = getattr(self.data_provider, "intraday_candidates_for_market", None)
+        all_candidates = market_loader(market) if market_loader else self.data_provider.intraday_candidates()
+        candidates = [item for item in all_candidates if _market_from_symbol(item.symbol) == market]
         auto_symbols = build_premarket_watchlist(
             candidates,
             min_turnover=self.params.intraday.min_turnover,
@@ -760,10 +760,23 @@ def build_live_runtime_from_env(live_state: LiveGatewayState, params: LiveParams
     symbols = [item for item in all_symbols() if item.market in runtime_markets]
     manual_symbols = _manual_intraday_symbols(all_settings, runtime_markets)
     manual_mode = all_settings.get("intraday_universe", {}).get("selection_mode") == "manual"
+    universe_source = None
+    intraday_candidate_source = None
+    if config.broker == "futu":
+        from quant.data.futu_market_scanner import FutuMarketScanner
+        from quant.live.config import load_futu_config
+
+        futu_config = load_futu_config()
+        scanner = FutuMarketScanner(futu_config.host, futu_config.port, runtime_markets)
+        universe_source = scanner.trend_symbols
+        intraday_candidate_source = scanner.intraday_candidates
     data_provider = DefaultLiveDataProvider(
         market_data,
         symbols=symbols,
         intraday_symbols=[*manual_symbols, *symbols],
+        universe_source=universe_source,
+        intraday_candidate_source=intraday_candidate_source,
+        markets=runtime_markets,
     )
     gateway: RuntimeGateway
     if config.dry_run:

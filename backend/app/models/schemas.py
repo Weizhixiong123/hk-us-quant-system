@@ -192,6 +192,11 @@ class BacktestTradeRow(BaseModel):
     symbols_source: str = "request"
     entry_reason: str = ""
     exit_reason: str = ""
+    action: str = "close"
+    action_label: str = ""
+    cash_after: float = 0.0
+    position_value: float = 0.0
+    weight_pct: float = 0.0
     max_favorable_pct: float = 0.0
     max_adverse_pct: float = 0.0
 

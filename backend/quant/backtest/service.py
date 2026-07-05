@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 import pandas as pd
 
 from app.models.schemas import BacktestRequest, BacktestResult, BacktestTradeRow, EquityPoint
+from quant.data.fundamentals import RawFundamentals, load_fundamentals
 from quant.data.loaders import Fetcher, MinuteFetcher, load_daily, load_minutes
-from quant.data.universe import get_universe
+from quant.data.universe import SymbolInfo, get_universe
+from quant.indicators.macd import has_top_divergence, macd
 from quant.indicators.trend import max_drawdown_pct, sma
+from quant.data.resample import resample_ohlcv
 from quant.live.clock import SESSIONS, is_bar_close, is_market_open
 from quant.live.intraday import (
     IntradayPosition,
@@ -35,23 +42,57 @@ class SymbolBacktest:
     trade_rows: tuple[BacktestTradeRow, ...]
 
 
+@dataclass
+class TrendHolding:
+    symbol: str
+    avg_price: float
+    quantity: float
+    entry_index: int
+    entry_time: str
+    target_value: float
+    invested_fraction: float
+    peak_price: float
+    take_profit_20_done: bool = False
+    take_profit_35_armed: bool = False
+    add_done: bool = False
+
+
+@dataclass(frozen=True)
+class TrendPortfolioBacktest:
+    returns: pd.Series
+    trade_returns: tuple[float, ...]
+    trade_rows: tuple[BacktestTradeRow, ...]
+    notes: tuple[str, ...]
+
+
+UniverseProvider = Callable[[str], list[SymbolInfo]]
+
+
 def run_backtest(
     request: BacktestRequest,
     fetcher: Fetcher | None = None,
     minute_fetcher: MinuteFetcher | None = None,
+    universe_provider: UniverseProvider | None = None,
 ) -> BacktestResult:
     auto_symbols = request.symbols_mode == "auto"
     symbols_source = request.symbols_source
     notes: list[str] = []
+    intraday_selection_days: dict[str, set[date]] | None = None
+    adjusted_request = _ensure_minimum_trend_range(request)
+    if adjusted_request.start_date != request.start_date:
+        notes.append(f"中长线回测区间不足 6 个月，已自动扩展起始日期至 {adjusted_request.start_date}。")
+        request = adjusted_request
     if auto_symbols:
-        symbols = _auto_select_symbols(request, fetcher)
+        universe = _backtest_universe(request.market, fetcher, universe_provider)
+        symbols, intraday_selection_days = _auto_select_symbols(request, fetcher, universe)
         symbols_source = "自动选股策略"
         if symbols:
-            notes.append(f"已按{symbols_source}选出 {len(symbols)} 只标的。")
+            if request.strategy_id == "trend_portfolio":
+                notes.append(f"已加载全市场 {len(symbols)} 只候选标的，按历史月末逐期筛选。")
+            else:
+                notes.append(f"已按{symbols_source}筛选出 {len(symbols)} 只标的。")
         else:
-            symbols = [item.symbol for item in get_universe(request.market)]
-            symbols_source = "fallback universe"
-            notes.append("自动选股策略未选出标的，已使用静态 fallback universe。")
+            notes.append("全市场自动选股未筛出符合条件的标的。")
     else:
         symbols = request.symbols
         if not symbols:
@@ -67,6 +108,36 @@ def run_backtest(
     notes.append(f"股票来源：{symbols_source}。")
     notes.append(f"仓位来源：{position_source}。")
 
+    if request.strategy_id == "trend_portfolio":
+        trend_run = _run_trend_portfolio_backtest(request, symbols, fetcher, symbols_source)
+        notes.extend(trend_run.notes)
+        if trend_run.returns.empty:
+            result = _empty_result(request, notes or ["没有可用于回测的数据。"])
+            _log_backtest(f"回测结束：没有可用标的生成结果 id={result.id} trades=0")
+            return result
+        equity = request.initial_capital * (1 + trend_run.returns).cumprod()
+        result = BacktestResult(
+            id=f"BT-{uuid4().hex[:8].upper()}",
+            strategy_id=request.strategy_id,
+            market=request.market,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            total_return_pct=_total_return_pct(equity, request.initial_capital),
+            max_drawdown_pct=max_drawdown_pct(equity.tolist()),
+            sharpe=_sharpe(trend_run.returns),
+            win_rate_pct=_win_rate_pct(list(trend_run.trade_returns)),
+            trades=len(trend_run.trade_returns),
+            equity_curve=_build_equity_curve(equity),
+            trade_rows=list(trend_run.trade_rows),
+            notes=notes + _strategy_notes(request.strategy_id, len(symbols), symbols),
+        )
+        _log_backtest(
+            "回测完成 "
+            f"id={result.id} used_symbols={len(symbols)}/{len(symbols)} trades={result.trades} "
+            f"total_return_pct={result.total_return_pct} max_drawdown_pct={result.max_drawdown_pct}"
+        )
+        return result
+
     for symbol in symbols:
         if request.strategy_id == "intraday_macd":
             try:
@@ -74,7 +145,9 @@ def run_backtest(
                     f"加载1分钟线 symbol={symbol} market={request.market} "
                     f"range={request.start_date}~{request.end_date} source={'custom' if minute_fetcher else 'default'}"
                 )
-                minutes = load_minutes(symbol, request.market, request.start_date, request.end_date, "1m", minute_fetcher)
+                minutes = _load_backtest_minutes(
+                    symbol, request.market, request.start_date, request.end_date, "1m", minute_fetcher
+                )
                 _log_backtest(f"1分钟线加载完成 symbol={symbol} rows={len(minutes)}")
             except Exception as exc:
                 _log_backtest(f"1分钟线加载失败 symbol={symbol} error={exc}")
@@ -96,13 +169,14 @@ def run_backtest(
                 allocation,
                 position_source,
                 symbols_source,
+                allowed_entry_dates=(intraday_selection_days or {}).get(symbol),
             )
             _log_backtest(f"标的回测完成 symbol={symbol} trades={len(symbol_run.trade_rows)} bars={len(minutes)}")
             runs.append(symbol_run)
             continue
 
         try:
-            daily = load_daily(symbol, request.market, request.start_date, request.end_date, fetcher)
+            daily = _load_backtest_daily(symbol, request.market, request.start_date, request.end_date, fetcher)
         except Exception as exc:  # 数据源失败不应让整次回测中断
             notes.append(f"{symbol} 数据加载失败：{exc}")
             continue
@@ -150,51 +224,213 @@ def run_backtest(
     return result
 
 
-def _auto_select_symbols(request: BacktestRequest, fetcher: Fetcher | None) -> list[str]:
+def _ensure_minimum_trend_range(request: BacktestRequest) -> BacktestRequest:
+    if request.strategy_id != "trend_portfolio":
+        return request
+    try:
+        start = datetime.strptime(request.start_date, "%Y-%m-%d")
+        end = datetime.strptime(request.end_date, "%Y-%m-%d")
+    except ValueError:
+        return request
+    minimum_start = _subtract_months(end, 6)
+    if start <= minimum_start:
+        return request
+    return request.model_copy(update={"start_date": minimum_start.strftime("%Y-%m-%d")})
+
+
+def _subtract_months(value: datetime, months: int) -> datetime:
+    month = value.month - months
+    year = value.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    days_in_month = [31, 29 if _is_leap_year(year) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    day = min(value.day, days_in_month[month - 1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _is_leap_year(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def _auto_select_symbols(
+    request: BacktestRequest,
+    fetcher: Fetcher | None,
+    universe: list[SymbolInfo],
+) -> tuple[list[str], dict[str, set[date]] | None]:
     if request.strategy_id == "intraday_macd":
-        return _auto_select_intraday_symbols(request, fetcher)
-    return [item.symbol for item in get_universe(request.market)]
+        return _auto_select_intraday_symbols(request, fetcher, universe)
+    if request.strategy_id == "trend_portfolio":
+        return _auto_select_trend_symbols(request, universe), None
+    return [item.symbol for item in universe], None
 
 
-def _auto_select_intraday_symbols(request: BacktestRequest, fetcher: Fetcher | None) -> list[str]:
-    candidates: list[IntradayCandidate] = []
-    for item in get_universe(request.market):
+def _auto_select_trend_symbols(request: BacktestRequest, universe: list[SymbolInfo]) -> list[str]:
+    symbols = [item.symbol for item in universe]
+    _log_backtest(
+        f"中长全市场候选池加载完成 market={request.market} universe={len(symbols)}；"
+        "将在每个历史月末按当时数据重新筛选"
+    )
+    return symbols
+
+
+def _auto_select_intraday_symbols(
+    request: BacktestRequest,
+    fetcher: Fetcher | None,
+    universe: list[SymbolInfo],
+) -> tuple[list[str], dict[str, set[date]]]:
+    daily_by_symbol: dict[str, tuple[SymbolInfo, pd.DataFrame]] = {}
+    warmup_start = (datetime.strptime(request.start_date, "%Y-%m-%d") - timedelta(days=40)).strftime("%Y-%m-%d")
+    for item in universe:
         try:
-            daily = load_daily(item.symbol, request.market, request.start_date, request.end_date, fetcher)
+            daily = _load_backtest_daily(item.symbol, request.market, warmup_start, request.end_date, fetcher)
         except Exception as exc:
             _log_backtest(f"自动选股日线加载失败 symbol={item.symbol} error={exc}")
             continue
         if len(daily) < 21:
             continue
-        prev = daily.iloc[-2]
-        recent = daily.tail(20)
-        prev_close = float(prev["close"])
-        amplitude = (float(prev["high"]) - float(prev["low"])) / prev_close * 100 if prev_close > 0 else 0.0
-        avg_turnover = float((recent["close"] * recent["volume"]).mean())
-        price = float(daily.iloc[-1]["close"])
-        candidates.append(
-            IntradayCandidate(
-                symbol=item.symbol,
-                market=item.market,
-                avg_turnover=avg_turnover,
-                prev_amplitude_pct=round(amplitude, 4),
-                price=price,
-                halted=False,
-                ex_dividend_soon=False,
-                major_news=False,
-                market_cap=0.0,
-            )
-        )
-    symbols = build_premarket_watchlist(
-        candidates,
-        min_turnover=float(request.params_snapshot.get("min_turnover", 5_000_000.0)),
-        min_amplitude_pct=float(request.params_snapshot.get("min_amplitude_pct", 2.0)),
-        max_amplitude_pct=float(request.params_snapshot.get("max_amplitude_pct", 8.0)),
-        min_price=float(request.params_snapshot.get("min_price", 2.0)),
-        min_turnover_rate=float(request.params_snapshot.get("min_turnover_rate", 0.0)),
+        daily_by_symbol[item.symbol] = (item, daily.sort_index())
+
+    candidate_limit = _int_param(request.params_snapshot, "backtest_candidate_limit", 30)
+    selection_days: dict[str, set[date]] = {}
+    start = pd.Timestamp(request.start_date)
+    end = pd.Timestamp(request.end_date)
+    trading_days = sorted(
+        day for day in set().union(*(set(frame.index) for _, frame in daily_by_symbol.values()))
+        if start <= day <= end
     )
-    _log_backtest(f"自动选股完成 strategy={request.strategy_id} market={request.market} candidates={len(candidates)} selected={len(symbols)}")
-    return symbols
+    for trading_day in trading_days:
+        candidates = [
+            candidate
+            for item, daily in daily_by_symbol.values()
+            if (candidate := _historical_intraday_candidate(item, daily, trading_day)) is not None
+        ]
+        ranked = sorted(candidates, key=lambda item: item.avg_turnover, reverse=True)
+        selected = build_premarket_watchlist(
+            ranked,
+            min_turnover=float(request.params_snapshot.get("min_turnover", 5_000_000.0)),
+            min_amplitude_pct=float(request.params_snapshot.get("min_amplitude_pct", 2.0)),
+            max_amplitude_pct=float(request.params_snapshot.get("max_amplitude_pct", 8.0)),
+            min_price=float(request.params_snapshot.get("min_price", 2.0)),
+            min_turnover_rate=float(request.params_snapshot.get("min_turnover_rate", 0.0)),
+        )[:max(candidate_limit, 1)]
+        for symbol in selected:
+            selection_days.setdefault(symbol, set()).add(trading_day.date())
+
+    symbols = list(selection_days)
+    _log_backtest(
+        f"日内全市场历史选股完成 market={request.market} loaded={len(daily_by_symbol)} "
+        f"trading_days={len(trading_days)} selected_union={len(symbols)}"
+    )
+    return symbols, selection_days
+
+
+def _historical_intraday_candidate(
+    item: SymbolInfo,
+    daily: pd.DataFrame,
+    trading_day: pd.Timestamp,
+) -> IntradayCandidate | None:
+    history = daily.loc[daily.index < trading_day].tail(20)
+    if len(history) < 20:
+        return None
+    prev = history.iloc[-1]
+    prev_close = float(prev["close"])
+    amplitude = (float(prev["high"]) - float(prev["low"])) / prev_close * 100 if prev_close > 0 else 0.0
+    return IntradayCandidate(
+        symbol=item.symbol,
+        market=item.market,
+        avg_turnover=float((history["close"] * history["volume"]).mean()),
+        prev_amplitude_pct=round(amplitude, 4),
+        price=prev_close,
+        halted=False,
+        ex_dividend_soon=False,
+        major_news=False,
+    )
+
+
+def _backtest_universe(
+    market: str,
+    fetcher: Fetcher | None,
+    provider: UniverseProvider | None = None,
+) -> list[SymbolInfo]:
+    if provider is not None:
+        return list(provider(market))
+    if fetcher is not None:
+        return get_universe(market)
+    try:
+        from quant.data.futu_market_scanner import FutuMarketScanner
+        from quant.live.config import load_futu_config
+
+        config = load_futu_config()
+        scanner = FutuMarketScanner(config.host, config.port, (market,))
+        symbols = scanner.symbols(market)
+        if symbols:
+            return symbols
+    except Exception as exc:
+        _log_backtest(f"全市场证券列表读取失败 market={market} error={exc}，使用静态降级池")
+    return get_universe(market)
+
+
+def _load_backtest_daily(
+    symbol: str,
+    market: str,
+    start: str,
+    end: str,
+    fetcher: Fetcher | None,
+) -> pd.DataFrame:
+    if fetcher is not None:
+        return load_daily(symbol, market, start, end, fetcher)
+    return _load_cached_bars(
+        "1d", symbol, market, start, end,
+        lambda: load_daily(symbol, market, start, end),
+    )
+
+
+def _load_backtest_minutes(
+    symbol: str,
+    market: str,
+    start: str,
+    end: str,
+    interval: str,
+    fetcher: MinuteFetcher | None,
+) -> pd.DataFrame:
+    if fetcher is not None:
+        return load_minutes(symbol, market, start, end, interval, fetcher)
+    return _load_cached_bars(
+        interval, symbol, market, start, end,
+        lambda: load_minutes(symbol, market, start, end, interval),
+    )
+
+
+def _load_cached_bars(
+    interval: str,
+    symbol: str,
+    market: str,
+    start: str,
+    end: str,
+    loader: Callable[[], pd.DataFrame],
+) -> pd.DataFrame:
+    cache_dir = Path(
+        os.getenv(
+            "BACKTEST_CACHE_DIR",
+            str(Path(__file__).resolve().parents[2] / "data" / "backtest-cache"),
+        )
+    )
+    key = hashlib.sha256(f"v1|{market}|{symbol}|{interval}|{start}|{end}".encode()).hexdigest()
+    path = cache_dir / f"{key}.csv"
+    if path.exists():
+        try:
+            cached = pd.read_csv(path, index_col=0, parse_dates=True)
+            cached.index = pd.to_datetime(cached.index)
+            return cached
+        except (OSError, ValueError, pd.errors.ParserError):
+            pass
+
+    bars = loader()
+    if not bars.empty:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        bars.to_csv(path)
+    return bars
 
 
 def _run_intraday_macd_minutes(
@@ -204,6 +440,7 @@ def _run_intraday_macd_minutes(
     allocation: float,
     position_source: str,
     symbols_source: str,
+    allowed_entry_dates: set[date] | None = None,
 ) -> SymbolBacktest:
     params = request.params_snapshot
     fast_ema = _int_param(params, "fast_ema", 12)
@@ -305,7 +542,11 @@ def _run_intraday_macd_minutes(
                 highest_price = 0.0
                 lowest_price = 0.0
 
-        elif is_market_open(at, request.market) and is_bar_close(at, 3, request.market):
+        elif (
+            (allowed_entry_dates is None or at.date() in allowed_entry_dates)
+            and is_market_open(at, request.market)
+            and is_bar_close(at, 3, request.market)
+        ):
             closes_15m, closes_5m, closes_3m = _three_period_closes(aggregator, symbol)
             if min(len(closes_15m), len(closes_5m), len(closes_3m)) >= slow_ema + 1:
                 signal = evaluate_intraday_entry_signal(
@@ -433,84 +674,426 @@ def _intraday_trade_return(side: str, entry_price: float, exit_price: float) -> 
         return (entry_price - exit_price) / entry_price
     return (exit_price - entry_price) / entry_price
 
-def _run_trend_daily_proxy(
-    symbol: str,
-    daily: pd.DataFrame,
-    market: str,
-    allocation: float,
-    position_source: str,
+def _run_trend_portfolio_backtest(
+    request: BacktestRequest,
+    symbols: list[str],
+    fetcher: Fetcher | None,
     symbols_source: str,
-) -> SymbolBacktest:
-    closes = daily["close"].astype(float).tolist()
-    holding = False
-    entry_price: float | None = None
-    entry_time = ""
-    quantity = 0.0
-    daily_returns: list[float] = [0.0]
-    trade_returns: list[float] = []
-    trade_rows: list[BacktestTradeRow] = []
+) -> TrendPortfolioBacktest:
+    notes: list[str] = ["中长线组合回测：月末选股调仓、基本面硬筛、分批建仓、阶段止盈与趋势出场已启用。"]
+    warmup_start = _trend_warmup_start(request.start_date)
+    notes.append(f"已加载 {warmup_start} 起的预热数据，用于计算 60 月均线与周线指标。")
+    data: dict[str, pd.DataFrame] = {}
+    for symbol in symbols:
+        try:
+            daily = _load_backtest_daily(symbol, request.market, warmup_start, request.end_date, fetcher)
+        except Exception as exc:
+            notes.append(f"{symbol} 数据加载失败：{exc}")
+            continue
+        if len(daily) < 30:
+            notes.append(f"{symbol} 数据不足，已跳过。")
+            continue
+        data[symbol] = daily.sort_index()
+    if not data:
+        return TrendPortfolioBacktest(pd.Series(dtype=float), (), (), tuple(notes))
 
-    for index in range(1, len(daily)):
-        previous_close = closes[index - 1]
-        current_close = closes[index]
-        ma20 = sma(closes[: index + 1], 20)
-        ma60 = sma(closes[: index + 1], 60)
-        trend_ok = ma20 is not None and ma60 is not None and current_close > ma20 > ma60
-
-        daily_returns.append(
-            (current_close / previous_close - 1) if holding and previous_close else 0.0
-        )
-
-        if holding and not trend_ok:
-            if entry_price:
-                trade_returns.append(current_close / entry_price - 1)
-                trade_rows.append(
-                    _build_trade_row(
-                        symbol=symbol,
-                        market=market,
-                        entry_time=entry_time,
-                        exit_time=_format_time(daily.index[index]),
-                        entry_price=entry_price,
-                        exit_price=current_close,
-                        position_size=allocation,
-                        quantity=quantity,
-                        position_source=position_source,
-                        symbols_source=symbols_source,
-                    )
-                )
-            holding = False
-            entry_price = None
-            entry_time = ""
-            quantity = 0.0
-        elif not holding and trend_ok:
-            holding = True
-            entry_price = current_close
-            entry_time = _format_time(daily.index[index])
-            quantity = _quantity_for(allocation, current_close)
-
-    if holding and entry_price:
-        trade_returns.append(closes[-1] / entry_price - 1)
-        trade_rows.append(
-            _build_trade_row(
-                symbol=symbol,
-                market=market,
-                entry_time=entry_time,
-                exit_time=_format_time(daily.index[-1]),
-                entry_price=entry_price,
-                exit_price=closes[-1],
-                position_size=allocation,
-                quantity=quantity,
-                position_source=position_source,
-                symbols_source=symbols_source,
-            )
-        )
-
-    return SymbolBacktest(
-        symbol=symbol,
-        returns=pd.Series(daily_returns, index=daily.index, dtype=float),
-        trade_returns=tuple(trade_returns),
-        trade_rows=tuple(trade_rows),
+    evaluation_start = pd.Timestamp(request.start_date)
+    evaluation_end = pd.Timestamp(request.end_date)
+    calendar = sorted(
+        day
+        for day in set().union(*(set(df.index) for df in data.values()))
+        if evaluation_start <= day <= evaluation_end
     )
+    if not calendar:
+        return TrendPortfolioBacktest(pd.Series(dtype=float), (), (), tuple(notes))
+    rebalance_dates = set(_month_end_dates(calendar))
+    min_positions = _int_param(request.params_snapshot, "target_positions_min", 5)
+    max_positions = _int_param(request.params_snapshot, "target_positions_max", 8)
+    cap_pct = float(request.params_snapshot.get("single_position_cap_pct", 15.0))
+    max_symbol_drawdown = float(request.params_snapshot.get("max_symbol_drawdown_pct", 18.0))
+    cash = request.initial_capital
+    holdings: dict[str, TrendHolding] = {}
+    equity_values: list[float] = []
+    returns: list[float] = []
+    trade_rows: list[BacktestTradeRow] = []
+    trade_returns: list[float] = []
+    last_equity = request.initial_capital
+    max_candidate_count = 0
+    selected: list[str] = []
+
+    for index, current_date in enumerate(calendar):
+        prices = {symbol: _price_on_or_before(df, current_date) for symbol, df in data.items()}
+        prices = {symbol: price for symbol, price in prices.items() if price is not None and price > 0}
+        if not prices:
+            returns.append(0.0)
+            equity_values.append(last_equity)
+            continue
+
+        equity_before_actions = cash + sum(holding.quantity * prices.get(symbol, holding.avg_price) for symbol, holding in holdings.items())
+
+        for symbol in list(holdings):
+            if symbol not in prices:
+                continue
+            holding = holdings[symbol]
+            price = prices[symbol]
+            holding.peak_price = max(holding.peak_price, price)
+            history = _history_until(data[symbol], current_date)
+            snapshot = _trend_backtest_snapshot(history)
+            pnl_pct = (price / holding.avg_price - 1) * 100 if holding.avg_price > 0 else 0.0
+            drawdown_pct = (holding.peak_price - price) / holding.peak_price * 100 if holding.peak_price > 0 else 0.0
+            holding_days = index - holding.entry_index
+            exit_reason = _trend_exit_reason(snapshot, pnl_pct, drawdown_pct, holding_days)
+            if not exit_reason and holding.take_profit_35_armed and (snapshot["weekly_macd_top_divergence"] or not snapshot["weekly_macd_hist_healthy"]):
+                exit_reason = "盈利超过 35% 后周线动能走弱，清仓锁定收益"
+            if exit_reason:
+                value = holding.quantity * price
+                cash += value
+                trade_returns.append(price / holding.avg_price - 1 if holding.avg_price > 0 else 0.0)
+                trade_rows.append(_trend_trade_row(symbol, request.market, "close", "清仓", holding.entry_time, current_date, holding.avg_price, price, value, holding.quantity, cash, equity_before_actions, symbols_source, exit_reason, holding))
+                del holdings[symbol]
+                continue
+            if pnl_pct >= 20 and not holding.take_profit_20_done and holding.quantity > 0:
+                sell_qty = round(holding.quantity * 0.5, 4)
+                value = sell_qty * price
+                cash += value
+                holding.quantity = round(holding.quantity - sell_qty, 4)
+                holding.invested_fraction *= 0.5
+                holding.take_profit_20_done = True
+                trade_rows.append(_trend_trade_row(symbol, request.market, "reduce", "阶段止盈20%减仓", holding.entry_time, current_date, holding.avg_price, price, value, sell_qty, cash, equity_before_actions, symbols_source, "阶段性盈利达到 20%，减仓 50%", holding))
+            if pnl_pct >= 35:
+                holding.take_profit_35_armed = True
+
+        if current_date in rebalance_dates:
+            candidates = _trend_rank_candidates(data, request.market, current_date, request.params_snapshot)
+            max_candidate_count = max(max_candidate_count, len(candidates))
+            selected = [symbol for symbol, _score in candidates[:max_positions]]
+            for symbol in list(holdings):
+                if symbol not in selected and symbol in prices:
+                    holding = holdings[symbol]
+                    price = prices[symbol]
+                    value = holding.quantity * price
+                    cash += value
+                    trade_returns.append(price / holding.avg_price - 1 if holding.avg_price > 0 else 0.0)
+                    trade_rows.append(_trend_trade_row(symbol, request.market, "close", "月末调仓剔除", holding.entry_time, current_date, holding.avg_price, price, value, holding.quantity, cash, equity_before_actions, symbols_source, "月末重新选股未入选，调仓剔除", holding))
+                    del holdings[symbol]
+
+        if selected:
+            equity_now = cash + sum(holding.quantity * prices.get(symbol, holding.avg_price) for symbol, holding in holdings.items())
+            target_value = min(equity_now * cap_pct / 100, equity_now / max(min(max_positions, max(len(selected), 1)), 1))
+            for symbol in selected:
+                if symbol not in prices:
+                    continue
+                history = _history_until(data[symbol], current_date)
+                closes = history["close"].astype(float).tolist()
+                lows = history["low"].astype(float).tolist()
+                volumes = history["volume"].astype(float).tolist()
+                bar_index = len(history) - 1
+                if symbol in holdings:
+                    holding = holdings[symbol]
+                    if not holding.add_done and _trend_daily_entry_ok(closes, lows, volumes, bar_index):
+                        add_value = min(target_value * 0.4, cash)
+                        if add_value > 0:
+                            add_qty = _quantity_for(add_value, prices[symbol])
+                            total_cost = holding.avg_price * holding.quantity + prices[symbol] * add_qty
+                            holding.quantity = round(holding.quantity + add_qty, 4)
+                            holding.avg_price = total_cost / holding.quantity if holding.quantity else holding.avg_price
+                            holding.invested_fraction = min(1.0, holding.invested_fraction + 0.4)
+                            holding.add_done = True
+                            cash -= add_value
+                            trade_rows.append(_trend_trade_row(symbol, request.market, "add", "补仓", holding.entry_time, current_date, prices[symbol], prices[symbol], add_value, add_qty, cash, equity_now, symbols_source, "日线再次回踩 20/30 日均线企稳，补足剩余 40% 仓位", holding))
+                    continue
+                if len(holdings) >= max_positions or cash <= 0:
+                    continue
+                if _trend_daily_entry_ok(closes, lows, volumes, bar_index):
+                    first_value = min(target_value * 0.6, cash)
+                    if first_value <= 0:
+                        continue
+                    qty = _quantity_for(first_value, prices[symbol])
+                    holding = TrendHolding(symbol, prices[symbol], qty, index, _format_time(current_date), target_value, 0.6, prices[symbol])
+                    holdings[symbol] = holding
+                    cash -= first_value
+                    trade_rows.append(_trend_trade_row(symbol, request.market, "open", "首次建仓", _format_time(current_date), current_date, prices[symbol], prices[symbol], first_value, qty, cash, equity_now, symbols_source, "月线定方向、周线确认趋势、日线回踩企稳，首次建立 60% 仓位", holding))
+
+        equity = cash + sum(holding.quantity * prices.get(symbol, holding.avg_price) for symbol, holding in holdings.items())
+        returns.append(equity / last_equity - 1 if last_equity > 0 else 0.0)
+        equity_values.append(equity)
+        last_equity = equity
+
+    final_date = calendar[-1]
+    final_prices = {symbol: _price_on_or_before(df, final_date) for symbol, df in data.items()}
+    for symbol, holding in list(holdings.items()):
+        price = final_prices.get(symbol) or holding.avg_price
+        value = holding.quantity * price
+        cash += value
+        trade_returns.append(price / holding.avg_price - 1 if holding.avg_price > 0 else 0.0)
+        trade_rows.append(_trend_trade_row(symbol, request.market, "close", "回测结束清仓", holding.entry_time, final_date, holding.avg_price, price, value, holding.quantity, cash, last_equity, symbols_source, "回测结束强制平仓", holding))
+
+    if max_candidate_count < min_positions:
+        notes.append(
+            f"回测期间单次最多 {max_candidate_count} 只标的通过中长线硬筛，"
+            f"低于目标持仓下限 {min_positions} 只；已按实际合格标的执行。"
+        )
+
+    return TrendPortfolioBacktest(pd.Series(returns, index=calendar, dtype=float), tuple(trade_returns), tuple(trade_rows), tuple(notes))
+
+
+def _trend_warmup_start(start_date: str) -> str:
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+    except ValueError:
+        return start_date
+    return _subtract_months(start, 62).strftime("%Y-%m-%d")
+
+
+
+def _month_end_dates(calendar: list[pd.Timestamp]) -> list[pd.Timestamp]:
+    result: list[pd.Timestamp] = []
+    for idx, day in enumerate(calendar):
+        if idx == len(calendar) - 1 or calendar[idx + 1].month != day.month or calendar[idx + 1].year != day.year:
+            result.append(day)
+    return result
+
+
+def _history_until(daily: pd.DataFrame, current_date: pd.Timestamp) -> pd.DataFrame:
+    return daily.loc[daily.index <= current_date]
+
+
+def _price_on_or_before(daily: pd.DataFrame, current_date: pd.Timestamp) -> float | None:
+    history = _history_until(daily, current_date)
+    if history.empty:
+        return None
+    return float(history.iloc[-1]["close"])
+
+
+def _trend_rank_candidates(
+    data: dict[str, pd.DataFrame],
+    market: str,
+    current_date: pd.Timestamp,
+    params: dict[str, object],
+) -> list[tuple[str, float]]:
+    candidates: list[tuple[str, float]] = []
+    for symbol, daily in data.items():
+        history = _history_until(daily, current_date)
+        if len(history) < 120:
+            continue
+        snapshot = _trend_backtest_snapshot(history)
+        fundamentals = _trend_fundamentals(symbol, market, params)
+        if not _trend_entry_ok(snapshot):
+            continue
+        min_cap = 5_000_000_000 if market == "HK" else 2_000_000_000
+        if fundamentals.positive_profit_quarters < 2 or fundamentals.has_major_risk or fundamentals.market_cap < min_cap:
+            continue
+        score = _trend_candidate_score(snapshot)
+        candidates.append((symbol, score))
+    return sorted(candidates, key=lambda item: item[1], reverse=True)
+
+
+def _trend_fundamentals(symbol: str, market: str, params: dict[str, object]):
+    configured = params.get("fundamentals")
+    raw: RawFundamentals | None = None
+    risk_blocklist = params.get("risk_blocklist")
+    risks = risk_blocklist if isinstance(risk_blocklist, list) else []
+    if isinstance(configured, dict):
+        item = configured.get(symbol.upper()) or configured.get(symbol)
+        if isinstance(item, dict):
+            raw = RawFundamentals(
+                market_cap=float(item.get("market_cap", 0.0)),
+                positive_profit_quarters=int(item.get("positive_profit_quarters", 0)),
+            )
+    if raw is None:
+        # 回测缺少点时基本面时使用保守但可运行的兜底：主流候选池视为满足硬筛；测试可用 params 覆盖。
+        raw = RawFundamentals(market_cap=10_000_000_000.0, positive_profit_quarters=2)
+    return load_fundamentals(symbol, market, lambda _symbol, _market: raw, risk_blocklist=risks)
+
+
+def _trend_candidate_score(snapshot: dict[str, float | bool]) -> float:
+    return (
+        float(snapshot.get("ma5_week", 0.0))
+        + float(snapshot.get("ma10_week", 0.0))
+        + float(snapshot.get("ma20_week", 0.0))
+        - float(snapshot.get("max_drawdown_3m_pct", 0.0))
+        - float(snapshot.get("short_term_gain_pct", 0.0)) * 0.1
+    )
+
+
+def _trend_trade_row(
+    symbol: str,
+    market: str,
+    action: str,
+    action_label: str,
+    entry_time: str,
+    current_date: pd.Timestamp,
+    entry_price: float,
+    price: float,
+    value: float,
+    quantity: float,
+    cash_after: float,
+    equity: float,
+    symbols_source: str,
+    reason: str,
+    holding: TrendHolding,
+) -> BacktestTradeRow:
+    return _build_trade_row(
+        symbol=symbol,
+        market=market,
+        entry_time=entry_time,
+        exit_time=_format_time(current_date),
+        entry_price=entry_price,
+        exit_price=price,
+        position_size=value,
+        quantity=quantity,
+        position_source="策略默认单只最大 15%",
+        symbols_source=symbols_source,
+        action=action,
+        action_label=action_label,
+        cash_after=cash_after,
+        position_value=value,
+        weight_pct=(value / equity * 100) if equity > 0 else 0.0,
+        entry_reason=reason if action in {"open", "add"} else "中长线持仓管理",
+        exit_reason=reason if action in {"reduce", "close"} else "",
+        max_favorable_pct=(holding.peak_price / holding.avg_price - 1) * 100 if holding.avg_price > 0 else 0.0,
+        max_adverse_pct=0.0,
+    )
+
+
+def _trend_backtest_snapshot(daily: pd.DataFrame) -> dict[str, float | bool]:
+    closes = daily["close"].astype(float).tolist()
+    weekly = resample_ohlcv(daily, "W")
+    monthly = resample_ohlcv(daily, "ME")
+    weekly_closes = weekly["close"].astype(float).tolist()
+    weekly_highs = weekly["high"].astype(float).tolist()
+    weekly_lows = weekly["low"].astype(float).tolist()
+    monthly_closes = monthly["close"].astype(float).tolist()
+    monthly_highs = monthly["high"].astype(float).tolist()
+    monthly_macd = macd(monthly_closes)
+    weekly_macd = macd(weekly_closes)
+
+    return {
+        "price": closes[-1] if closes else 0.0,
+        "ma20_month": sma(monthly_closes, 20) or float("inf"),
+        "ma60_month": sma(monthly_closes, 60) or float("inf"),
+        "month_macd_above_zero": bool(monthly_macd and monthly_macd[-1].dif > 0 and monthly_macd[-1].dea > 0),
+        "ma5_week": sma(weekly_closes, 5) or 0.0,
+        "ma10_week": sma(weekly_closes, 10) or 0.0,
+        "ma20_week": sma(weekly_closes, 20) or 0.0,
+        "weekly_rising": _trend_weekly_rising(weekly_highs, weekly_lows),
+        "weekly_ma_break": _trend_weekly_ma_break(weekly_closes),
+        "monthly_below_ma60_two_months": _trend_monthly_below_ma60_two_months(monthly_closes),
+        "monthly_macd_below_zero": bool(monthly_macd and monthly_macd[-1].dif < 0 and monthly_macd[-1].dea < 0),
+        "weekly_macd_hist_positive": _trend_macd_hist_positive(weekly_macd),
+        "weekly_macd_hist_healthy": _trend_macd_hist_healthy(weekly_macd),
+        "weekly_macd_top_divergence": _trend_top_divergence(weekly_highs, weekly_macd),
+        "monthly_macd_top_divergence": _trend_top_divergence(monthly_highs, monthly_macd),
+        "max_drawdown_3m_pct": max_drawdown_pct(closes[-63:]),
+        "short_term_gain_pct": _trend_recent_gain_pct(closes, 20),
+    }
+
+
+def _trend_entry_ok(snapshot: dict[str, float | bool]) -> bool:
+    price = float(snapshot["price"])
+    return bool(
+        price > float(snapshot["ma20_month"])
+        and price > float(snapshot["ma60_month"])
+        and snapshot["month_macd_above_zero"]
+        and float(snapshot["ma5_week"]) > float(snapshot["ma10_week"]) > float(snapshot["ma20_week"])
+        and snapshot["weekly_rising"]
+        and snapshot["weekly_macd_hist_positive"]
+        and snapshot["weekly_macd_hist_healthy"]
+        and not snapshot["weekly_macd_top_divergence"]
+        and not snapshot["monthly_macd_top_divergence"]
+        and float(snapshot["max_drawdown_3m_pct"]) <= 15
+        and float(snapshot["short_term_gain_pct"]) <= 40
+    )
+
+
+def _trend_daily_entry_ok(closes: list[float], lows: list[float], volumes: list[float], index: int) -> bool:
+    ma20 = sma(closes[: index + 1], 20)
+    ma30 = sma(closes[: index + 1], 30)
+    if ma20 is None or ma30 is None:
+        return False
+    close = closes[index]
+    low = lows[index]
+    pullback_ok = (low <= ma20 * 1.01 and close >= ma20) or (low <= ma30 * 1.01 and close >= ma30)
+    recent_macd = macd(closes[: index + 1])
+    macd_ok = not recent_macd or recent_macd[-1].dif >= recent_macd[-1].dea or recent_macd[-1].dif > 0
+    avg_volume20 = sum(volumes[max(0, index - 20) : index]) / min(index, 20) if index > 0 else 0.0
+    volume_ok = avg_volume20 <= 0 or not (close < closes[index - 1] and volumes[index] > avg_volume20 * 1.5)
+    return pullback_ok and macd_ok and volume_ok
+
+
+def _trend_exit_reason(
+    snapshot: dict[str, float | bool],
+    pnl_pct: float,
+    drawdown_pct: float,
+    holding_days: int,
+) -> str:
+    if drawdown_pct >= 18:
+        return "单一标的回撤达到 18%，无条件止损"
+    if snapshot["monthly_below_ma60_two_months"]:
+        return "月线连续 2 个月跌破 60 月均线，清仓"
+    if snapshot["weekly_ma_break"] and holding_days >= 20:
+        return "周线 5 周线下穿 10 周线，止损离场"
+    if snapshot["monthly_macd_below_zero"]:
+        return "月线 MACD 双线跌破零轴，趋势转空头清仓"
+    if snapshot["weekly_macd_top_divergence"] or snapshot["monthly_macd_top_divergence"]:
+        return "周线/月线 MACD 顶背离，趋势见顶清仓"
+    if holding_days >= 126:
+        return "持仓满 6 个月，调仓换股"
+    return ""
+
+
+def _trend_macd_hist_positive(points) -> bool:
+    return bool(points and (points[-1].hist > 0 or (points[-1].dif > 0 and points[-1].dea > 0)))
+
+
+def _trend_macd_hist_healthy(points, bars: int = 3) -> bool:
+    if len(points) < bars:
+        return False
+    hist = [float(point.hist) for point in points[-bars:]]
+    if points[-1].dif > 0 and points[-1].dea > 0:
+        return True
+    if any(value <= 0 for value in hist):
+        return False
+    return hist[-1] >= max(hist) * 0.2
+
+
+def _trend_top_divergence(highs: list[float], points) -> bool:
+    if len(highs) < 8 or len(points) < 8:
+        return False
+    hist = [float(point.hist) for point in points]
+    return has_top_divergence(highs, hist, lookback=min(28, len(highs)))
+
+
+def _trend_weekly_rising(highs: list[float], lows: list[float]) -> bool:
+    if len(highs) < 8 or len(lows) < 8:
+        return False
+    return max(highs[-4:]) > max(highs[-8:-4]) and min(lows[-4:]) > min(lows[-8:-4])
+
+
+def _trend_weekly_ma_break(weekly_closes: list[float]) -> bool:
+    ma5 = sma(weekly_closes, 5)
+    ma10 = sma(weekly_closes, 10)
+    return ma5 is not None and ma10 is not None and ma5 < ma10
+
+
+def _trend_monthly_below_ma60_two_months(monthly_closes: list[float]) -> bool:
+    if len(monthly_closes) < 61:
+        return False
+    previous_ma60 = sma(monthly_closes[:-1], 60)
+    current_ma60 = sma(monthly_closes, 60)
+    return bool(
+        previous_ma60 is not None
+        and current_ma60 is not None
+        and monthly_closes[-2] < previous_ma60
+        and monthly_closes[-1] < current_ma60
+    )
+
+
+def _trend_recent_gain_pct(closes: list[float], days: int) -> float:
+    recent = closes[-days:]
+    if len(recent) < 2 or recent[0] == 0:
+        return 0.0
+    return (recent[-1] / recent[0] - 1) * 100
 
 
 def _is_intraday_force_close_time(value: object, market: str) -> bool:
@@ -564,6 +1147,11 @@ def _build_trade_row(
     side: str = "long",
     entry_reason: str = "",
     exit_reason: str = "",
+    action: str = "close",
+    action_label: str = "",
+    cash_after: float = 0.0,
+    position_value: float = 0.0,
+    weight_pct: float = 0.0,
     max_favorable_pct: float = 0.0,
     max_adverse_pct: float = 0.0,
 ) -> BacktestTradeRow:
@@ -589,6 +1177,11 @@ def _build_trade_row(
         symbols_source=symbols_source,
         entry_reason=entry_reason,
         exit_reason=exit_reason,
+        action=action,
+        action_label=action_label,
+        cash_after=round(cash_after, 2),
+        position_value=round(position_value, 2),
+        weight_pct=round(weight_pct, 2),
         max_favorable_pct=round(max_favorable_pct, 2),
         max_adverse_pct=round(max_adverse_pct, 2),
     )

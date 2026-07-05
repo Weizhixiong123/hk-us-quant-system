@@ -4,19 +4,20 @@ import pandas as pd
 import pytest
 
 from app.models.schemas import BacktestRequest
+from quant.data.universe import SymbolInfo
 from quant.backtest.service import run_backtest
 
 
 def _trend_fetch(symbol, market, start, end):
-    idx = pd.date_range("2024-01-01", periods=120, freq="D")
-    close = [100 + i * 0.5 for i in range(120)]
+    idx = pd.date_range("2018-01-01", periods=2500, freq="D")
+    close = [100 + i * 0.05 for i in range(2500)]
     return pd.DataFrame(
         {
             "Open": close,
             "High": [value * 1.01 for value in close],
             "Low": [value * 0.99 for value in close],
             "Close": close,
-            "Volume": [1_000_000] * 120,
+            "Volume": [1_000_000] * 2500,
         },
         index=idx,
     )
@@ -69,13 +70,75 @@ def test_trend_backtest_uses_price_data():
     assert first_trade.symbol == "AAPL"
     assert first_trade.entry_time
     assert first_trade.exit_time
-    assert first_trade.position_size == 100_000
+    assert first_trade.position_size <= 15_000
+    assert first_trade.action in {"open", "add", "reduce", "close"}
     assert first_trade.quantity > 0
-    assert first_trade.pnl > 0
+    assert any(row.pnl > 0 for row in result.trade_rows if row.action == "close")
     assert result.equity_curve
     assert result.equity_curve[0].equity == 100_000
     assert result.equity_curve[-1].equity > result.equity_curve[0].equity
     assert any("日线趋势代理回测" in note for note in result.notes)
+
+
+def test_trend_backtest_loads_five_year_warmup_but_reports_requested_period():
+    requested_ranges = []
+
+    def fetch(symbol, market, start, end):
+        requested_ranges.append((start, end))
+        return _trend_fetch(symbol, market, start, end)
+
+    result = run_backtest(
+        BacktestRequest(
+            strategy_id="trend_portfolio",
+            market="US",
+            start_date="2024-01-01",
+            end_date="2024-05-01",
+            symbols=["AAPL"],
+            initial_capital=100_000,
+        ),
+        fetcher=fetch,
+    )
+
+    assert requested_ranges == [("2018-09-01", "2024-05-01")]
+    assert result.equity_curve
+    assert result.equity_curve[0].time >= result.start_date
+    assert result.equity_curve[-1].time <= result.end_date
+    assert any("60 月均线" in note for note in result.notes)
+
+
+def test_trend_selection_waits_for_daily_entry_after_month_end(monkeypatch):
+    entry_checks = 0
+
+    monkeypatch.setattr(
+        "quant.backtest.service._trend_rank_candidates",
+        lambda *args, **kwargs: [("AAPL", 1.0)],
+    )
+
+    def daily_entry_after_selection(*args, **kwargs):
+        nonlocal entry_checks
+        entry_checks += 1
+        return entry_checks >= 2
+
+    monkeypatch.setattr(
+        "quant.backtest.service._trend_daily_entry_ok",
+        daily_entry_after_selection,
+    )
+
+    result = run_backtest(
+        BacktestRequest(
+            strategy_id="trend_portfolio",
+            market="US",
+            start_date="2024-01-01",
+            end_date="2024-07-01",
+            symbols=["AAPL"],
+            initial_capital=100_000,
+        ),
+        fetcher=_trend_fetch,
+    )
+
+    opens = [row for row in result.trade_rows if row.action == "open"]
+    assert opens
+    assert opens[0].entry_time.startswith("2024-02-01")
 
 
 def test_backtest_uses_strategy_position_param_for_trade_size():
@@ -95,9 +158,9 @@ def test_backtest_uses_strategy_position_param_for_trade_size():
 
     assert result.trade_rows
     assert {row.symbol for row in result.trade_rows} == {"AAPL", "MSFT"}
-    assert all(row.position_size == 15_000 for row in result.trade_rows)
+    assert all(row.position_size <= 15_000 for row in result.trade_rows if row.action in {"open", "add"})
     assert all(row.symbols_source == "当前候选股票池" for row in result.trade_rows)
-    assert all(row.position_source == "策略参数 single_position_cap_pct=15%" for row in result.trade_rows)
+    assert all("15%" in row.position_source for row in result.trade_rows)
 
 
 def test_intraday_backtest_does_not_fall_back_to_daily_proxy():
@@ -222,6 +285,90 @@ def test_empty_intraday_candidate_pool_runs_auto_selection(monkeypatch):
 
     assert minute_symbols == ["AAPL"]
     assert any("自动选股策略" in note for note in result.notes)
+
+
+def test_intraday_auto_backtest_scans_injected_full_market_universe():
+    daily_symbols: list[str] = []
+    minute_symbols: list[str] = []
+
+    def daily_fetch(symbol, market, start, end):
+        daily_symbols.append(symbol)
+        idx = pd.date_range("2024-01-01", periods=25, freq="D")
+        close = [100.0] * 25
+        return pd.DataFrame(
+            {"Open": close, "High": [103.0] * 25, "Low": [99.0] * 25, "Close": close, "Volume": [100_000] * 25},
+            index=idx,
+        )
+
+    def minute_fetch(symbol, market, start, end, interval):
+        minute_symbols.append(symbol)
+        return pd.DataFrame()
+
+    universe = [SymbolInfo(f"S{i}", f"Stock {i}", "US") for i in range(4)]
+    run_backtest(
+        BacktestRequest(
+            strategy_id="intraday_macd",
+            market="US",
+            start_date="2024-01-01",
+            end_date="2024-02-01",
+            symbols=[],
+            symbols_mode="auto",
+            initial_capital=100_000,
+            params_snapshot={"min_amplitude_pct": 1, "max_amplitude_pct": 5, "backtest_candidate_limit": 2},
+        ),
+        fetcher=daily_fetch,
+        minute_fetcher=minute_fetch,
+        universe_provider=lambda market: universe,
+    )
+
+    assert set(daily_symbols) == {"S0", "S1", "S2", "S3"}
+    assert len(minute_symbols) == 2
+
+
+def test_trend_auto_backtest_loads_entire_injected_universe():
+    loaded: list[str] = []
+
+    def fetch(symbol, market, start, end):
+        loaded.append(symbol)
+        return _trend_fetch(symbol, market, start, end)
+
+    universe = [SymbolInfo("AAA", "AAA", "US"), SymbolInfo("BBB", "BBB", "US")]
+    run_backtest(
+        BacktestRequest(
+            strategy_id="trend_portfolio",
+            market="US",
+            start_date="2024-01-01",
+            end_date="2024-05-01",
+            symbols=[],
+            symbols_mode="auto",
+            initial_capital=100_000,
+        ),
+        fetcher=fetch,
+        universe_provider=lambda market: universe,
+    )
+
+    assert loaded == ["AAA", "BBB"]
+
+
+def test_default_backtest_daily_data_is_cached(monkeypatch, tmp_path):
+    from quant.backtest.service import _load_backtest_daily
+
+    calls = 0
+
+    def load(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        frame = _trend_fetch(*args[:4])
+        return frame.rename(columns=str.lower)
+
+    monkeypatch.setenv("BACKTEST_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr("quant.backtest.service.load_daily", load)
+
+    first = _load_backtest_daily("AAPL", "US", "2024-01-01", "2024-02-01", None)
+    second = _load_backtest_daily("AAPL", "US", "2024-01-01", "2024-02-01", None)
+
+    assert calls == 1
+    assert len(first) == len(second)
 
 
 def test_custom_empty_candidate_pool_does_not_auto_select(monkeypatch):

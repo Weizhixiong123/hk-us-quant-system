@@ -37,7 +37,9 @@ def screen_intraday(
     results: list[ScreenHit] = []
     for c in candidates:
         # 换手率 = 日均成交额 / 总市值 * 100 (%)，总市值为 0 时跳过此检查
-        rate = (c.avg_turnover / c.market_cap * 100) if c.market_cap > 0 else 0.0
+        rate = c.turnover_rate
+        if rate <= 0 and c.market_cap > 0:
+            rate = c.avg_turnover / c.market_cap * 100
         checks = {
             f"日均成交额≥{min_turnover:.0f}": c.avg_turnover >= min_turnover,
             f"振幅∈[{min_amplitude_pct:.1f}%,{max_amplitude_pct:.1f}%]": min_amplitude_pct <= c.prev_amplitude_pct <= max_amplitude_pct,

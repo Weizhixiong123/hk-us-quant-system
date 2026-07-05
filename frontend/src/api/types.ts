@@ -171,6 +171,11 @@ export interface BacktestTradeRow {
   symbols_source: string;
   entry_reason: string;
   exit_reason: string;
+  action: string;
+  action_label: string;
+  cash_after: number;
+  position_value: number;
+  weight_pct: number;
   max_favorable_pct: number;
   max_adverse_pct: number;
 }

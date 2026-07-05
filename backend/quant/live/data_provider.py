@@ -18,6 +18,8 @@ from quant.screening.intraday_screener import IntradayCandidate
 
 
 DailyLoader = Callable[[str, str, str, str], pd.DataFrame]
+UniverseSource = Callable[[str], list[SymbolInfo]]
+IntradayCandidateSource = Callable[..., list[IntradayCandidate]]
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,9 @@ class DefaultLiveDataProvider:
         fundamentals_source: FundamentalsSource | None = None,
         risk_blocklist: Iterable[str] = (),
         market_info: MarketInfoProvider | None = None,
+        universe_source: UniverseSource | None = None,
+        intraday_candidate_source: IntradayCandidateSource | None = None,
+        markets: Iterable[str] = ("HK", "US"),
     ) -> None:
         self.market_data = market_data
         self.symbols = symbols or all_symbols()
@@ -65,11 +70,24 @@ class DefaultLiveDataProvider:
         self.fundamentals_source = fundamentals_source or default_fundamentals_source
         self.risk_blocklist = tuple(risk_blocklist)
         self.market_info = market_info or MarketInfoProvider()
+        self.universe_source = universe_source
+        self.intraday_candidate_source = intraday_candidate_source
+        self.markets = tuple(markets)
         self._fundamentals_cache: dict[str, FundamentalSnapshot] = {}
 
     def intraday_candidates(self) -> list[IntradayCandidate]:
+        return self.intraday_candidates_for_market(None)
+
+    def intraday_candidates_for_market(self, market: str | None) -> list[IntradayCandidate]:
+        if self.intraday_candidate_source is not None:
+            try:
+                return self.intraday_candidate_source(market)
+            except Exception:
+                pass
         candidates: list[IntradayCandidate] = []
         for item in self.intraday_symbols:
+            if market is not None and item.market != market:
+                continue
             daily = self._load_daily(item, lookback_days=140)
             if daily is None or len(daily) < 21:
                 continue
@@ -105,6 +123,7 @@ class DefaultLiveDataProvider:
         return candidates
 
     def portfolio_rows(self) -> list[tuple[str, str, pd.DataFrame, FundamentalSnapshot]]:
+        self._refresh_universe()
         rows: list[tuple[str, str, pd.DataFrame, FundamentalSnapshot]] = []
         for item in self.symbols:
             daily = self._load_daily(item, lookback_days=2200)
@@ -119,6 +138,18 @@ class DefaultLiveDataProvider:
             )
             rows.append((item.symbol, item.market, daily, fundamentals))
         return rows
+
+    def _refresh_universe(self) -> None:
+        if self.universe_source is None:
+            return
+        refreshed: list[SymbolInfo] = []
+        for market in self.markets:
+            try:
+                refreshed.extend(self.universe_source(market))
+            except Exception:
+                continue
+        if refreshed:
+            self.symbols = refreshed
 
     def daily_timing(self, symbol: str, market: str) -> DailyTimingSnapshot | None:
         daily = self._load_daily(SymbolInfo(symbol, symbol, market), lookback_days=90)

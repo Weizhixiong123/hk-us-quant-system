@@ -52,6 +52,17 @@ def test_app_state_dashboard_uses_live_gateway_snapshot():
     assert dashboard.logs[1].severity == "warning"
 
 
+def test_order_is_not_marked_filled_without_dealt_quantity():
+    live_state = LiveGatewayState()
+    live_state.update_order(
+        GatewayOrder("O-MARKET", "AAPL", "多", "开", 0, 1, 0, "全部成交")
+    )
+
+    order = AppState(live_state).dashboard().orders[0]
+
+    assert order.status == "submitted"
+
+
 def test_app_state_dashboard_does_not_show_seed_data_without_live_account():
     state = AppState(LiveGatewayState())
 
@@ -299,7 +310,17 @@ def test_dashboard_watchlist_labels_manual_selection(monkeypatch, tmp_path):
 
     db = tmp_path / "live.sqlite3"
     settings_path = tmp_path / "live-settings.json"
-    save_live_settings({"intraday_universe": {"selection_mode": "manual"}}, settings_path)
+    save_live_settings(
+        {
+            "intraday_universe": {
+                "selection_mode": "manual",
+                "manual_symbols": [
+                    {"symbol": "TSLA", "name": "Tesla", "market": "US", "shortable": False}
+                ],
+            }
+        },
+        settings_path,
+    )
     monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
     created_at = datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc)
     record_live_event(
@@ -353,13 +374,53 @@ def test_dashboard_watchlist_labels_manual_auto_selection(monkeypatch, tmp_path)
     assert watchlist[0].tags == ["手动+筛选", "等待 15m 收线确认"]
 
 
+def test_dashboard_watchlist_removes_deleted_manual_symbol_but_keeps_auto(monkeypatch, tmp_path):
+    from quant.live.settings import save_live_settings
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    settings_path = tmp_path / "live-settings.json"
+    save_live_settings(
+        {"intraday_universe": {"selection_mode": "manual", "manual_symbols": []}},
+        settings_path,
+    )
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        created_at=datetime(2026, 7, 4, 14, 0, tzinfo=timezone.utc),
+        payload={
+            "market": "US",
+            "symbols": ["TSLA", "AAPL"],
+            "selection_mode": "manual+auto",
+            "manual_symbols": ["TSLA"],
+            "auto_symbols": ["AAPL"],
+        },
+        db_path=db,
+    )
+
+    watchlist = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist
+
+    assert [item.symbol for item in watchlist] == ["AAPL"]
+
+
 def test_dashboard_watchlist_only_shows_latest_selection_for_current_mode(monkeypatch, tmp_path):
     from quant.live.settings import save_live_settings
     from quant.live.store import record_live_event
 
     db = tmp_path / "live.sqlite3"
     settings_path = tmp_path / "live-settings.json"
-    save_live_settings({"intraday_universe": {"selection_mode": "manual"}}, settings_path)
+    save_live_settings(
+        {
+            "intraday_universe": {
+                "selection_mode": "manual",
+                "manual_symbols": [
+                    {"symbol": "TSLA", "name": "Tesla", "market": "US", "shortable": False}
+                ],
+            }
+        },
+        settings_path,
+    )
     monkeypatch.setenv("LIVE_SETTINGS_PATH", str(settings_path))
     record_live_event(
         kind="selection",
