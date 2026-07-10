@@ -24,6 +24,19 @@ def test_runtime_state_persists_snapshot_once_and_updates_pdt(tmp_path):
     assert state.pdt_remaining(at.date()) == 2
 
 
+def test_runtime_state_does_not_persist_loaded_trade_again(tmp_path):
+    db_path = tmp_path / "live.sqlite3"
+    trade = GatewayTrade("T1", "O1", "AAPL", "多", "开", 101, 100, "2026-06-23T10:00:00+00:00")
+    first = StrategyRuntimeState()
+    first.persist_gateway_snapshot({"trades": [trade]}, datetime.now(timezone.utc), db_path)
+
+    restarted = StrategyRuntimeState()
+    restarted.load_entry_dates_from_events(list_live_events(kind="trade", db_path=db_path))
+    restarted.persist_gateway_snapshot({"trades": [trade]}, datetime.now(timezone.utc), db_path)
+
+    assert len(list_live_events(kind="trade", db_path=db_path)) == 1
+
+
 def test_runtime_state_tracks_intraday_and_portfolio_flags():
     state = StrategyRuntimeState()
 

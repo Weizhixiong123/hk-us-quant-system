@@ -9,6 +9,9 @@ class IntradayParams:
     fast_ema: int = 12
     slow_ema: int = 26
     signal_ema: int = 9
+    slow_k_minutes: int = 15       # 大周期 K 线(分钟)
+    mid_k_minutes: int = 5         # 中周期 K 线(分钟)
+    fast_k_minutes: int = 3        # 小周期/触发 K 线(分钟)
     stop_loss_pct: float = 1.5
     take_profit_1_pct: float = 2.0
     take_profit_2_pct: float = 3.5
@@ -18,6 +21,8 @@ class IntradayParams:
     # 新增:watchlist 评分参数
     score_half_life_hours: float = 4.0    # freshness 半衰期
     shortable_bonus_pts: float = 0.05    # shortable 标的 +0.05 flat bonus
+    auto_min_score: float = 0.65         # 自动选股最低评分门槛(0~1)
+    max_auto_candidates: int = 40        # 每个市场自动候选数量上限
     # 盘前筛选参数
     open_after_minutes: int = 30         # 开盘后 N 分钟才允许开仓
     close_before_minutes: int = 90       # 收盘前 N 分钟停止开仓
@@ -92,6 +97,14 @@ def _validate_intraday(params: IntradayParams) -> None:
         raise ValueError("MACD 信号线周期必须在 2 到 60 之间")
     if params.fast_ema >= params.slow_ema:
         raise ValueError("MACD 快线周期必须小于慢线周期")
+    if not 1 <= params.slow_k_minutes <= 120:
+        raise ValueError("大周期 K 线必须在 1 到 120 分钟之间")
+    if not 1 <= params.mid_k_minutes <= 60:
+        raise ValueError("中周期 K 线必须在 1 到 60 分钟之间")
+    if not 1 <= params.fast_k_minutes <= 30:
+        raise ValueError("小周期 K 线必须在 1 到 30 分钟之间")
+    if not (params.fast_k_minutes < params.mid_k_minutes < params.slow_k_minutes):
+        raise ValueError("K 线周期必须满足:小周期 < 中周期 < 大周期")
     if not 0 < params.position_fraction_pct <= 100:
         raise ValueError("单次开仓仓位必须大于 0 且不超过 100%")
     if not 1 <= params.max_positions <= 20:
@@ -106,6 +119,10 @@ def _validate_intraday(params: IntradayParams) -> None:
         raise ValueError("开盘等待与收盘前停止时间之和必须小于 390 分钟")
     if not 0 <= params.trailing_start_pct <= 100 or not 0 <= params.trailing_stop_pct <= 100:
         raise ValueError("动态止盈参数必须在 0 到 100 之间")
+    if not 0 <= params.auto_min_score <= 1:
+        raise ValueError("自动选股评分门槛必须在 0 到 1 之间")
+    if not 1 <= params.max_auto_candidates <= 1000:
+        raise ValueError("自动候选数量上限必须在 1 到 1000 之间")
     if min(
         params.min_turnover,
         params.min_amplitude_pct,

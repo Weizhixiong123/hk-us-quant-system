@@ -18,6 +18,9 @@ class _Exchange:
 def test_clean_symbol_removes_market_suffix_or_prefix():
     assert _clean_symbol("00700.HK") == "00700"
     assert _clean_symbol("HK.00700") == "00700"
+    assert _clean_symbol("7709.HK") == "07709"
+    assert _clean_symbol("HK.7747") == "07747"
+    assert _clean_symbol("0700.HK") == "00700"
     assert _clean_symbol("AAPL.US") == "AAPL"
     assert _clean_symbol("us.msft") == "MSFT"
 
@@ -122,8 +125,48 @@ def test_futu_setting_maps_vnpy_futu_chinese_keys():
         "市场": "HK",
         "环境": "SIMULATE",
     }
-
     assert _futu_setting_from_config(config, "US")["市场"] == "US"
+
+
+def test_futu_subscribe_uses_quote_only():
+    from quant.live.config import FutuGatewayConfig
+    from quant.live.gateway import FutuLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    calls = []
+
+    class _QuoteContext:
+        def subscribe(self, symbol, data_type, push):
+            calls.append((symbol, data_type, push))
+            return 0, ""
+
+    class _Gateway:
+        quote_ctx = _QuoteContext()
+
+        def write_log(self, message):
+            raise AssertionError(message)
+
+    class _MainEngine:
+        def get_gateway(self, name):
+            assert name == "FUTU_US"
+            return _Gateway()
+
+    config = FutuGatewayConfig(
+        host="127.0.0.1",
+        port=11111,
+        trd_env="SIMULATE",
+        market="US",
+        markets=("US",),
+        paper=True,
+        real_trading_confirmed=False,
+    )
+    gateway = FutuLiveGateway(config, LiveGatewayState())
+    gateway._main_engine = _MainEngine()
+    gateway._gateway_names = {"US": "FUTU_US"}
+
+    gateway.subscribe(["AAPL"])
+
+    assert calls == [("US.AAPL", "QUOTE", True)]
 
 
 def test_futu_routes_each_market_to_its_own_gateway():
@@ -162,6 +205,67 @@ def test_futu_send_order_uses_market_specific_gateway():
     assert us_order == "FUTU_US.ORDER"
     assert hk_order == "FUTU_HK.ORDER"
     assert [call[1] for call in gateway._main_engine.calls] == ["FUTU_US", "FUTU_HK"]
+
+
+def test_futu_paper_sync_converts_filled_orders_to_incremental_trades():
+    import pandas as pd
+
+    from quant.live.config import FutuGatewayConfig
+    from quant.live.gateway import FutuLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    rows = pd.DataFrame(
+        [
+            {
+                "order_id": "7843139",
+                "code": "HK.07709",
+                "trd_side": "BUY",
+                "dealt_qty": 100,
+                "dealt_avg_price": 23.45,
+                "updated_time": "2026-07-06 11:55:36",
+            }
+        ]
+    )
+
+    class _TradeContext:
+        def order_list_query(self, _status, trd_env):
+            assert trd_env == "SIMULATE"
+            return 0, rows
+
+    class _Gateway:
+        env = "SIMULATE"
+        trade_ctx = _TradeContext()
+
+    class _MainEngine:
+        def get_gateway(self, name):
+            assert name == "FUTU_HK"
+            return _Gateway()
+
+    state = LiveGatewayState()
+    config = FutuGatewayConfig(
+        "127.0.0.1", 11111, "SIMULATE", "HK", ("HK",), True, False
+    )
+    gateway = FutuLiveGateway(config, state)
+    gateway._main_engine = _MainEngine()
+    gateway._gateway_names = {"HK": "FUTU_HK"}
+
+    gateway.sync_trades()
+    gateway.sync_trades()
+    trade = state.snapshot()["trades"][0]
+
+    assert len(state.snapshot()["trades"]) == 1
+    assert trade.order_id == "7843139"
+    assert trade.symbol == "07709.HK"
+    assert trade.volume == 100
+    assert trade.price == 23.45
+
+
+def test_futu_trade_side_maps_sell_and_short_correctly():
+    from quant.live.gateway import _futu_trade_direction
+
+    assert _futu_trade_direction("SELL") == ("空", "平")
+    assert _futu_trade_direction("SELL_SHORT") == ("空", "开")
+    assert _futu_trade_direction("BUY_BACK") == ("多", "平")
 
 
 def test_bars_from_vnpy_maps_fields():

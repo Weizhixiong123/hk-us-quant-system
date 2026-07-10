@@ -161,16 +161,19 @@ def has_top_divergence(
 
 
 def build_intraday_decision(
-    closes_15m: Sequence[float],
-    closes_5m: Sequence[float],
-    closes_3m: Sequence[float],
+    closes_slow: Sequence[float],
+    closes_mid: Sequence[float],
+    closes_fast: Sequence[float],
     side: str,
     within_trade_window: bool,
     fast_period: int = 12,
     slow_period: int = 26,
     signal_period: int = 9,
+    slow_k_minutes: int = 15,
+    mid_k_minutes: int = 5,
+    fast_k_minutes: int = 3,
 ) -> IntradayDecision:
-    """三周期(15m/5m/3m)MACD 柱动量同步决策。
+    """三周期 MACD 柱动量同步决策(默认 15m/5m/3m,周期可配置)。
 
     开多:三周期柱均较各自上一根抬高;开空:三周期柱均较各自上一根下降。
     """
@@ -183,9 +186,9 @@ def build_intraday_decision(
         "slow_period": slow_period,
         "signal_period": signal_period,
     }
-    points_15m = macd(closes_15m, **macd_kwargs)
-    points_5m = macd(closes_5m, **macd_kwargs)
-    points_3m = macd(closes_3m, **macd_kwargs)
+    points_slow = macd(closes_slow, **macd_kwargs)
+    points_mid = macd(closes_mid, **macd_kwargs)
+    points_fast = macd(closes_fast, **macd_kwargs)
 
     if not within_trade_window:
         reasons.append("不在日内开仓时间窗")
@@ -193,9 +196,9 @@ def build_intraday_decision(
     momentum = histogram_rising if side == "long" else histogram_falling
     label = "柱抬高" if side == "long" else "柱下降"
     checks = {
-        f"15min {label}": momentum(points_15m),
-        f"5min {label}": momentum(points_5m),
-        f"3min {label}": momentum(points_3m),
+        f"{slow_k_minutes}min {label}": momentum(points_slow),
+        f"{mid_k_minutes}min {label}": momentum(points_mid),
+        f"{fast_k_minutes}min {label}": momentum(points_fast),
     }
 
     passed = [name for name, ok in checks.items() if ok]

@@ -58,6 +58,7 @@ export interface WatchSymbol {
   symbol: string;
   name: string;
   market: Market;
+  strategy_id: string;
   last_price: number;
   change_pct: number;
   turnover: number;
@@ -112,6 +113,17 @@ export interface TradeLog {
   source: string;
   severity: "info" | "warning" | "critical";
   message: string;
+}
+
+export interface CloseUnassignedPositionsResult {
+  submitted: number;
+  results: {
+    symbol: string;
+    submitted: boolean;
+    quantity: number;
+    order_id: string | null;
+    reasons: string[];
+  }[];
 }
 
 export interface Candle {
@@ -255,6 +267,9 @@ export interface IntradayParamsSettings {
   fast_ema: number;
   slow_ema: number;
   signal_ema: number;
+  slow_k_minutes: number;
+  mid_k_minutes: number;
+  fast_k_minutes: number;
   position_fraction_pct: number;
   max_positions: number;
   max_daily_loss_pct: number;
@@ -268,6 +283,8 @@ export interface IntradayParamsSettings {
   trailing_enabled: boolean;
   trailing_start_pct: number;
   trailing_stop_pct: number;
+  auto_min_score: number;
+  max_auto_candidates: number;
 }
 
 export interface LiveSettingsSnapshot {

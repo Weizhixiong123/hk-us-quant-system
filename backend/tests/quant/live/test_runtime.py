@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from quant.data.universe import SymbolInfo
 from quant.live.market_data import Bar
+from quant.live.params import LiveParams
 from quant.live.runtime import (
     DryRunGateway,
     LiveRuntime,
@@ -26,7 +27,7 @@ class FakeDataProvider:
             IntradayCandidate(
                 symbol="AAPL",
                 market="US",
-                avg_turnover=8_000_000,
+                avg_turnover=200_000_000,
                 prev_amplitude_pct=4,
                 price=100,
                 halted=False,
@@ -186,6 +187,45 @@ def test_manual_intraday_universe_merges_with_premarket_screener(tmp_path):
     assert event.payload["manual_symbols"] == ["TSLA"]
     assert event.payload["auto_symbols"] == ["AAPL"]
     assert event.payload["names"] == {"TSLA": "Tesla"}
+
+
+def test_automatic_selection_keeps_only_highest_ranked_candidates(tmp_path):
+    class ManyCandidates(FakeDataProvider):
+        def intraday_candidates(self):
+            return [
+                IntradayCandidate(
+                    symbol=symbol,
+                    market="US",
+                    avg_turnover=turnover,
+                    prev_amplitude_pct=4,
+                    price=100,
+                    halted=False,
+                    ex_dividend_soon=False,
+                    major_news=False,
+                )
+                for symbol, turnover in (("LOW", 6_000_000), ("MID", 30_000_000), ("HIGH", 200_000_000))
+            ]
+
+    params = LiveParams()
+    params.update("intraday_macd", {"auto_min_score": 0.5, "max_auto_candidates": 2})
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=DryRunGateway(live_state),
+        scheduler=LiveScheduler(markets=("US",)),
+        data_provider=ManyCandidates(),
+        market_data=FakeMarketData(),
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+        params=params,
+    )
+
+    runtime._run_intraday_premarket_scan("US", datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc))
+
+    assert runtime.runtime_state.intraday_watchlist == ["HIGH", "MID"]
+    event = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")[0]
+    assert event.payload["auto_symbols"] == ["HIGH", "MID"]
 
 
 def test_runtime_catches_up_missed_us_premarket_scan(tmp_path):

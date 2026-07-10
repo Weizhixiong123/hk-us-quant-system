@@ -111,3 +111,25 @@ def test_trade_history_reads_trade_events(tmp_path):
     assert history[0].side == "buy"  # 多 + 开 → 买入
     assert history[0].price == 198.4
     assert history[0].quantity == 100
+
+
+def test_trade_history_deduplicates_same_broker_trade(tmp_path):
+    from app.services.state import AppState
+    from quant.live.state import LiveGatewayState
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live-dry_run.sqlite3"
+    payload = {
+        "trade_id": "T1",
+        "order_id": "O1",
+        "symbol": "AAPL",
+        "direction": "多",
+        "offset": "开",
+        "price": 198.4,
+        "volume": 100,
+        "time": "2026-06-25T13:00:00+00:00",
+    }
+    for _ in range(2):
+        record_live_event(kind="trade", strategy_id="live", symbol="AAPL", payload=payload, db_path=db)
+
+    assert len(AppState(LiveGatewayState(), db_path=db).trade_history()) == 1

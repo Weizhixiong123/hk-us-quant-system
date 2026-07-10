@@ -54,9 +54,9 @@ def test_entry_signal_uses_trade_window_and_maps_long_action(monkeypatch):
         symbol="0700.HK",
         market="HK",
         at=datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ),
-        closes_15m=[1.0] * 30,
-        closes_5m=[1.0] * 30,
-        closes_3m=[1.0] * 30,
+        closes_slow=[1.0] * 30,
+        closes_mid=[1.0] * 30,
+        closes_fast=[1.0] * 30,
         fast_ema=8,
         slow_ema=21,
         signal_ema=5,
@@ -81,9 +81,9 @@ def test_entry_signal_falls_back_to_short_when_long_waits(monkeypatch):
         symbol="AAPL",
         market="US",
         at=datetime(2026, 6, 23, 10, 15, tzinfo=HK_TZ),
-        closes_15m=[1.0] * 30,
-        closes_5m=[1.0] * 30,
-        closes_3m=[1.0] * 30,
+        closes_slow=[1.0] * 30,
+        closes_mid=[1.0] * 30,
+        closes_fast=[1.0] * 30,
     )
 
     assert signal.action == "enter_short"

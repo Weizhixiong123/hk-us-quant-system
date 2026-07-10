@@ -13,6 +13,9 @@ INTRADAY_PARAM_DEFAULTS: dict[str, int | float] = {
     "fast_ema": 12,
     "slow_ema": 26,
     "signal_ema": 9,
+    "slow_k_minutes": 15,
+    "mid_k_minutes": 5,
+    "fast_k_minutes": 3,
     "position_fraction_pct": 10.0,
     "max_positions": 3,
     "max_daily_loss_pct": 3.0,
@@ -26,6 +29,8 @@ INTRADAY_PARAM_DEFAULTS: dict[str, int | float] = {
     "trailing_enabled": 1,
     "trailing_start_pct": 2.0,
     "trailing_stop_pct": 1.0,
+    "auto_min_score": 0.65,
+    "max_auto_candidates": 40,
 }
 
 
@@ -195,6 +200,10 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "max_positions",
         "open_after_minutes",
         "close_before_minutes",
+        "slow_k_minutes",
+        "mid_k_minutes",
+        "fast_k_minutes",
+        "max_auto_candidates",
     }
     for key, default in INTRADAY_PARAM_DEFAULTS.items():
         value = intraday_params.get(key, default)
@@ -293,6 +302,14 @@ def _validate(settings: Mapping[str, Any]) -> None:
         raise ValueError("MACD 信号线周期必须在 2 到 60 之间")
     if intraday["fast_ema"] >= intraday["slow_ema"]:
         raise ValueError("MACD 快线周期必须小于慢线周期")
+    if not 1 <= intraday["slow_k_minutes"] <= 120:
+        raise ValueError("大周期 K 线必须在 1 到 120 分钟之间")
+    if not 1 <= intraday["mid_k_minutes"] <= 60:
+        raise ValueError("中周期 K 线必须在 1 到 60 分钟之间")
+    if not 1 <= intraday["fast_k_minutes"] <= 30:
+        raise ValueError("小周期 K 线必须在 1 到 30 分钟之间")
+    if not (intraday["fast_k_minutes"] < intraday["mid_k_minutes"] < intraday["slow_k_minutes"]):
+        raise ValueError("K 线周期必须满足:小周期 < 中周期 < 大周期")
     if not 0 < intraday["position_fraction_pct"] <= 100:
         raise ValueError("单次开仓仓位必须大于 0 且不超过 100%")
     if not 1 <= intraday["max_positions"] <= 20:
@@ -315,3 +332,7 @@ def _validate(settings: Mapping[str, Any]) -> None:
         intraday["min_turnover_rate"],
     ) < 0:
         raise ValueError("盘前筛选参数不能小于 0")
+    if not 0 <= intraday.get("auto_min_score", 0.65) <= 1:
+        raise ValueError("自动选股评分门槛必须在 0 到 1 之间")
+    if not 1 <= intraday.get("max_auto_candidates", 40) <= 1000:
+        raise ValueError("自动候选数量上限必须在 1 到 1000 之间")

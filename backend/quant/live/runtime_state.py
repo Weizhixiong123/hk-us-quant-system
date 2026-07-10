@@ -107,6 +107,13 @@ class StrategyRuntimeState:
         return (today - entry).days if entry is not None else 0
 
     def load_entry_dates_from_events(self, events) -> None:
+        for event in events:
+            payload = event.payload or {}
+            key = payload.get("trade_id") or (
+                f"{payload.get('order_id', '')}:{payload.get('symbol', event.symbol or '')}:"
+                f"{payload.get('time', '')}"
+            )
+            self._seen_trades.add(str(key))
         for symbol, day in entry_dates_from_trade_events(events).items():
             self.portfolio_entry_dates.setdefault(symbol, day)
 

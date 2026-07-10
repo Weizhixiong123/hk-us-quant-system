@@ -152,6 +152,29 @@ def positions(request: Request) -> list[Position]:
     return get_state(request).current_positions()
 
 
+@router.post("/positions/unassigned/close")
+def close_unassigned_positions(request: Request) -> dict:
+    manager = getattr(request.app.state, "runtime_manager", None)
+    runtime = manager.runtime if manager else None
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime 未运行，无法提交平仓单")
+
+    positions = get_state(request).current_positions()
+    symbols = [
+        position.symbol
+        for position in positions
+        if position.strategy_id not in {"intraday_macd", "trend_portfolio"}
+    ]
+    if not symbols:
+        return {"submitted": 0, "results": []}
+
+    results = runtime.close_positions_by_symbols(symbols, "未归属持仓平仓")
+    return {
+        "submitted": sum(1 for item in results if item.get("submitted")),
+        "results": results,
+    }
+
+
 @router.get("/watchlist", response_model=list[WatchSymbol])
 def watchlist(request: Request) -> list[WatchSymbol]:
     return get_state(request).watchlist

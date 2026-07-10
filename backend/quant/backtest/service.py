@@ -154,7 +154,8 @@ def run_backtest(
                 notes.append(f"{symbol} 1分钟线加载失败，已跳过：{exc}")
                 continue
             slow_ema = _int_param(request.params_snapshot, "slow_ema", 26)
-            minimum_minutes = (slow_ema + 1) * 15
+            slow_k_minutes = _int_param(request.params_snapshot, "slow_k_minutes", 15)
+            minimum_minutes = (slow_ema + 1) * slow_k_minutes
             if minutes.empty or len(minutes) < minimum_minutes:
                 _log_backtest(f"跳过标的 symbol={symbol} reason=1分钟线不足 required={minimum_minutes} actual={len(minutes)}")
                 notes.append(
@@ -448,6 +449,9 @@ def _run_intraday_macd_minutes(
     signal_ema = _int_param(params, "signal_ema", 9)
     open_after_minutes = _int_param(params, "open_after_minutes", 30)
     close_before_minutes = _int_param(params, "close_before_minutes", 90)
+    slow_k_minutes = _int_param(params, "slow_k_minutes", 15)
+    mid_k_minutes = _int_param(params, "mid_k_minutes", 5)
+    fast_k_minutes = _int_param(params, "fast_k_minutes", 3)
 
     bars = minutes.sort_index()
     aggregator = BarAggregator()
@@ -487,12 +491,17 @@ def _run_intraday_macd_minutes(
             if _is_intraday_force_close_time(at, request.market):
                 exit_price = close
                 exit_reason = "尾盘强制平仓"
-            elif is_market_open(at, request.market) and is_bar_close(at, 3, request.market):
-                closes_15m, closes_5m, closes_3m = _three_period_closes(aggregator, symbol)
+            elif is_market_open(at, request.market) and is_bar_close(at, fast_k_minutes, request.market):
+                closes_slow, closes_mid, closes_fast = _three_period_closes(
+                    aggregator, symbol,
+                    slow_k_minutes=slow_k_minutes,
+                    mid_k_minutes=mid_k_minutes,
+                    fast_k_minutes=fast_k_minutes,
+                )
                 momentum = three_period_macd_momentum(
-                    closes_15m,
-                    closes_5m,
-                    closes_3m,
+                    closes_slow,
+                    closes_mid,
+                    closes_fast,
                     fast_ema=fast_ema,
                     slow_ema=slow_ema,
                     signal_ema=signal_ema,
@@ -545,20 +554,28 @@ def _run_intraday_macd_minutes(
         elif (
             (allowed_entry_dates is None or at.date() in allowed_entry_dates)
             and is_market_open(at, request.market)
-            and is_bar_close(at, 3, request.market)
+            and is_bar_close(at, fast_k_minutes, request.market)
         ):
-            closes_15m, closes_5m, closes_3m = _three_period_closes(aggregator, symbol)
-            if min(len(closes_15m), len(closes_5m), len(closes_3m)) >= slow_ema + 1:
+            closes_slow, closes_mid, closes_fast = _three_period_closes(
+                aggregator, symbol,
+                slow_k_minutes=slow_k_minutes,
+                mid_k_minutes=mid_k_minutes,
+                fast_k_minutes=fast_k_minutes,
+            )
+            if min(len(closes_slow), len(closes_mid), len(closes_fast)) >= slow_ema + 1:
                 signal = evaluate_intraday_entry_signal(
                     symbol=symbol,
                     market=request.market,
                     at=at,
-                    closes_15m=closes_15m,
-                    closes_5m=closes_5m,
-                    closes_3m=closes_3m,
+                    closes_slow=closes_slow,
+                    closes_mid=closes_mid,
+                    closes_fast=closes_fast,
                     fast_ema=fast_ema,
                     slow_ema=slow_ema,
                     signal_ema=signal_ema,
+                    slow_k_minutes=slow_k_minutes,
+                    mid_k_minutes=mid_k_minutes,
+                    fast_k_minutes=fast_k_minutes,
                     open_after_minutes=open_after_minutes,
                     close_before_minutes=close_before_minutes,
                 )
@@ -641,11 +658,14 @@ def _as_datetime(value: object) -> datetime:
 def _three_period_closes(
     aggregator: BarAggregator,
     symbol: str,
+    slow_k_minutes: int = 15,
+    mid_k_minutes: int = 5,
+    fast_k_minutes: int = 3,
 ) -> tuple[list[float], list[float], list[float]]:
-    closes_15m = [bar.close for bar in aggregator.interval_bars(symbol, 15, limit=80)]
-    closes_5m = [bar.close for bar in aggregator.interval_bars(symbol, 5, limit=80)]
-    closes_3m = [bar.close for bar in aggregator.interval_bars(symbol, 3, limit=80)]
-    return closes_15m, closes_5m, closes_3m
+    closes_slow = [bar.close for bar in aggregator.interval_bars(symbol, slow_k_minutes, limit=80)]
+    closes_mid = [bar.close for bar in aggregator.interval_bars(symbol, mid_k_minutes, limit=80)]
+    closes_fast = [bar.close for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
+    return closes_slow, closes_mid, closes_fast
 
 
 def _intraday_excursions(

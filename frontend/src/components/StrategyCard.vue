@@ -69,6 +69,15 @@ const INTRADAY_PARAM_GROUPS: ParamGroup[] = [
     ]
   },
   {
+    title: "K线周期",
+    icon: BarChart3,
+    params: [
+      { key: "slow_k_minutes", label: "大周期", hint: "三周期中最慢的K线(分钟)", unit: "分钟", min: 3, max: 120, step: 1 },
+      { key: "mid_k_minutes", label: "中周期", hint: "中间周期的K线(分钟)", unit: "分钟", min: 1, max: 60, step: 1 },
+      { key: "fast_k_minutes", label: "小周期", hint: "最小周期的K线(同时也是触发评估周期)", unit: "分钟", min: 1, max: 30, step: 1 }
+    ]
+  },
+  {
     title: "交易时段",
     icon: Clock3,
     params: [
@@ -84,7 +93,9 @@ const INTRADAY_PARAM_GROUPS: ParamGroup[] = [
       { key: "min_amplitude_pct", label: "前日振幅下限", hint: "前一交易日振幅最小值", unit: "%", min: 0, max: 100, step: 0.5 },
       { key: "max_amplitude_pct", label: "前日振幅上限", hint: "必须不小于振幅下限", unit: "%", min: 0, max: 100, step: 0.5 },
       { key: "min_price", label: "最低股价", hint: "过滤价格过低的标的", unit: "元", min: 0, max: 100000, step: 0.5 },
-      { key: "min_turnover_rate", label: "最低换手率", hint: "按成交额与总市值计算", unit: "%", min: 0, max: 100, step: 0.1 }
+      { key: "min_turnover_rate", label: "最低换手率", hint: "按成交额与总市值计算", unit: "%", min: 0, max: 100, step: 0.1 },
+      { key: "auto_min_score", label: "自动选股评分门槛", hint: "自动筛选标的的最低评分，低于此分不进入候选池", unit: "", min: 0, max: 1, step: 0.05 },
+      { key: "max_auto_candidates", label: "自动候选上限", hint: "按评分从高到低保留，每个市场最多进入候选池的数量", unit: "只", min: 1, max: 1000, step: 10 }
     ]
   },
   {
@@ -124,7 +135,7 @@ const INTRADAY_RULES: RuleGroup[] = [
   {
     title: "信号引擎",
     icon: BarChart3,
-    items: ["15 / 5 / 3 分钟三周期共振", "三周期柱同向抬高开多、走低开空", "持仓柱体反向同步即全平", "进出场按 3 分钟收线评估"]
+    items: ["大/中/小三周期共振(可在 K线周期 中配置)", "三周期柱同向抬高开多、走低开空", "持仓柱体反向同步即全平", "进出场按最小周期收线评估"]
   },
   {
     title: "执行约束",

@@ -38,9 +38,9 @@ class StrategyMathTest(unittest.TestCase):
     def test_build_intraday_decision_long_when_three_periods_rising(self) -> None:
         rising = _accelerating_up()
         decision = build_intraday_decision(
-            closes_15m=rising,
-            closes_5m=rising,
-            closes_3m=rising,
+            closes_slow=rising,
+            closes_mid=rising,
+            closes_fast=rising,
             side="long",
             within_trade_window=True,
         )
@@ -50,9 +50,9 @@ class StrategyMathTest(unittest.TestCase):
     def test_build_intraday_decision_short_when_three_periods_falling(self) -> None:
         falling = _accelerating_down()
         decision = build_intraday_decision(
-            closes_15m=falling,
-            closes_5m=falling,
-            closes_3m=falling,
+            closes_slow=falling,
+            closes_mid=falling,
+            closes_fast=falling,
             side="short",
             within_trade_window=True,
         )
@@ -61,9 +61,9 @@ class StrategyMathTest(unittest.TestCase):
     def test_build_intraday_decision_waits_outside_window(self) -> None:
         rising = _accelerating_up()
         decision = build_intraday_decision(
-            closes_15m=rising,
-            closes_5m=rising,
-            closes_3m=rising,
+            closes_slow=rising,
+            closes_mid=rising,
+            closes_fast=rising,
             side="long",
             within_trade_window=False,
         )

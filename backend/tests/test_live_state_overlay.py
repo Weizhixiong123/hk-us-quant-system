@@ -204,6 +204,36 @@ def test_risk_counts_only_positions_opened_by_intraday_strategy(tmp_path):
     assert intraday.detail == "1/3"
 
 
+def test_live_position_strategy_can_be_restored_from_open_trade_event(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="trade",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={
+            "event": "trade",
+            "symbol": "AAPL",
+            "direction": "多",
+            "offset": "开",
+            "volume": 100,
+            "price": 100,
+        },
+        db_path=db,
+    )
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("DRY-RUN", balance=1_000_000, available=900_000, frozen=100_000)
+    )
+    live_state.update_position(GatewayPosition("AAPL", "多", 100, 100, 0))
+
+    dashboard = AppState(live_state, db_path=db).dashboard()
+
+    assert dashboard.positions[0].strategy_id == "intraday_macd"
+    assert dashboard.orders == []
+
+
 def test_dashboard_watchlist_from_live_signals(tmp_path):
     from quant.live.store import record_live_event
 
@@ -227,6 +257,44 @@ def test_dashboard_watchlist_from_live_signals(tmp_path):
     assert aapl.market == "US"
     assert aapl.tags == ["15m 缩量", "5m 金叉"]
     assert aapl.triggered is False
+
+
+def test_dashboard_watchlist_ignores_order_block_signal_for_candidate_score(tmp_path):
+    from quant.live.store import record_live_event
+
+    db = tmp_path / "live.sqlite3"
+    record_live_event(
+        kind="selection",
+        strategy_id="intraday_macd",
+        payload={
+            "market": "US",
+            "symbols": ["AAPL"],
+            "selection_mode": "auto",
+            "score_components": {
+                "AAPL": {
+                    "consistency": 1.0,
+                    "daily_volume_ratio": 2.0,
+                    "prev_amplitude_pct": 4.0,
+                    "avg_turnover": 150_000_000,
+                }
+            },
+        },
+        db_path=db,
+    )
+    record_live_event(
+        kind="signal",
+        strategy_id="intraday_macd",
+        symbol="AAPL",
+        payload={"submitted": False, "reasons": ["下单失败：券商未返回订单号"]},
+        db_path=db,
+    )
+
+    row = AppState(LiveGatewayState(), db_path=db).dashboard().watchlist[0]
+
+    assert row.symbol == "AAPL"
+    assert row.score > 0.5
+    assert row.strategy_id == "intraday_macd"
+    assert row.tags == ["盘前筛选", "等待 15m 收线确认"]
 
 
 def test_dashboard_watchlist_marks_submitted_signal_triggered_today(tmp_path):

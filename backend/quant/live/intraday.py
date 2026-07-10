@@ -64,17 +64,20 @@ def evaluate_intraday_entry_signal(
     symbol: str,
     market: Market,
     at: datetime,
-    closes_15m: Sequence[float],
-    closes_5m: Sequence[float],
-    closes_3m: Sequence[float],
+    closes_slow: Sequence[float],
+    closes_mid: Sequence[float],
+    closes_fast: Sequence[float],
     *,
     fast_ema: int = 12,
     slow_ema: int = 26,
     signal_ema: int = 9,
+    slow_k_minutes: int = 15,
+    mid_k_minutes: int = 5,
+    fast_k_minutes: int = 3,
     open_after_minutes: int = 30,
     close_before_minutes: int = 90,
 ) -> IntradayEntrySignal:
-    """三周期(15m/5m/3m)MACD 柱动量同步入场。
+    """三周期 MACD 柱动量同步入场(默认 15m/5m/3m,周期可配置)。
 
     先判多(三周期柱同步抬高),不成立再判空(三周期柱同步下降)。
     """
@@ -84,27 +87,33 @@ def evaluate_intraday_entry_signal(
         close_before_minutes=close_before_minutes,
     )
     long_decision = build_intraday_decision(
-        closes_15m=closes_15m,
-        closes_5m=closes_5m,
-        closes_3m=closes_3m,
+        closes_slow=closes_slow,
+        closes_mid=closes_mid,
+        closes_fast=closes_fast,
         side="long",
         within_trade_window=within_window,
         fast_period=fast_ema,
         slow_period=slow_ema,
         signal_period=signal_ema,
+        slow_k_minutes=slow_k_minutes,
+        mid_k_minutes=mid_k_minutes,
+        fast_k_minutes=fast_k_minutes,
     )
     if long_decision.action == "long":
         return IntradayEntrySignal("enter_long", symbol, "long", long_decision.confidence, long_decision.reasons)
 
     short_decision = build_intraday_decision(
-        closes_15m=closes_15m,
-        closes_5m=closes_5m,
-        closes_3m=closes_3m,
+        closes_slow=closes_slow,
+        closes_mid=closes_mid,
+        closes_fast=closes_fast,
         side="short",
         within_trade_window=within_window,
         fast_period=fast_ema,
         slow_period=slow_ema,
         signal_period=signal_ema,
+        slow_k_minutes=slow_k_minutes,
+        mid_k_minutes=mid_k_minutes,
+        fast_k_minutes=fast_k_minutes,
     )
     if short_decision.action == "short":
         return IntradayEntrySignal("enter_short", symbol, "short", short_decision.confidence, short_decision.reasons)
@@ -135,17 +144,17 @@ def evaluate_intraday_exit_signal(
 
 
 def three_period_macd_momentum(
-    closes_15m: Sequence[float],
-    closes_5m: Sequence[float],
-    closes_3m: Sequence[float],
+    closes_slow: Sequence[float],
+    closes_mid: Sequence[float],
+    closes_fast: Sequence[float],
     *,
     fast_ema: int = 12,
     slow_ema: int = 26,
     signal_ema: int = 9,
 ) -> IntradayMomentum:
-    """返回15/5/3分钟 MACD 柱体的共同方向，供实盘与回测复用。"""
+    """返回三周期 MACD 柱体的共同方向,供实盘与回测复用。"""
     directions: list[IntradayMomentum] = []
-    for closes in (closes_15m, closes_5m, closes_3m):
+    for closes in (closes_slow, closes_mid, closes_fast):
         points = macd(
             closes,
             fast_period=fast_ema,

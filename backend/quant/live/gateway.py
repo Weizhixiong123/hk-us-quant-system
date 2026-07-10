@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import socket
+from datetime import datetime, timezone
 
 from quant.live.config import FutuGatewayConfig, TigerGatewayConfig
 from quant.live.market_data import Bar
 from quant.live.state import LiveGatewayState
 from quant.live.translate import (
+    GatewayTrade,
     account_from_vnpy,
     log_from_vnpy,
     order_from_vnpy,
@@ -38,6 +41,7 @@ class FutuLiveGateway:
         self._main_engine = None
         self._event_engine = None
         self._gateway_names: dict[str, str] = {}
+        self._synced_order_traded: dict[str, float] = {}
 
     def connect(self) -> None:
         try:
@@ -91,18 +95,17 @@ class FutuLiveGateway:
         )
 
     def subscribe(self, symbols: list[str], exchange: str | None = None) -> None:
-        # 延迟 import:远程环境无 vnpy
-        from vnpy.trader.constant import Exchange
-        from vnpy.trader.object import SubscribeRequest
-
         for symbol in symbols:
             market = _futu_route_market(symbol, self.config.market, exchange)
             main_engine, gateway_name = self._require_futu_gateway(market)
-            req = SubscribeRequest(
-                symbol=_clean_symbol(symbol),
-                exchange=_resolve_exchange(symbol, self.config.market, Exchange, exchange),
-            )
-            main_engine.subscribe(req, gateway_name)
+            gateway = main_engine.get_gateway(gateway_name)
+            quote_ctx = getattr(gateway, "quote_ctx", None)
+            if quote_ctx is None:
+                raise RuntimeError(f"FUTU {market} quote connection is not ready")
+            futu_symbol = f"{market}.{_clean_symbol(symbol)}"
+            code, detail = quote_ctx.subscribe(futu_symbol, "QUOTE", True)
+            if code:
+                gateway.write_log(f"订阅行情失败：{detail}")
 
     def send_order(
         self,
@@ -118,11 +121,12 @@ class FutuLiveGateway:
         from vnpy.trader.object import OrderRequest
 
         market = _futu_route_market(symbol, self.config.market, exchange)
+        order_type = _resolve_order_type()
         req = OrderRequest(
             symbol=_clean_symbol(symbol),
             exchange=_resolve_exchange(symbol, self.config.market, Exchange, exchange),
             direction=Direction(direction),
-            type=OrderType.LIMIT,
+            type=order_type,
             volume=volume,
             price=price,
             offset=Offset(offset),
@@ -148,6 +152,43 @@ class FutuLiveGateway:
         )
         main_engine, gateway_name = self._require_futu_gateway(market)
         main_engine.cancel_order(req, gateway_name)
+
+    def sync_trades(self) -> None:
+        """模拟盘不提供成交查询，以订单的累计成交量补齐成交记录。"""
+        if not self.config.paper:
+            return
+        for market, gateway_name in self._gateway_names.items():
+            gateway = self._require_main_engine().get_gateway(gateway_name)
+            trade_ctx = getattr(gateway, "trade_ctx", None)
+            if trade_ctx is None:
+                continue
+            code, rows = trade_ctx.order_list_query("", trd_env=gateway.env)
+            if code:
+                continue
+            for _, row in rows.iterrows():
+                order_id = str(row["order_id"])
+                cumulative = float(row.get("dealt_qty", 0.0))
+                previous = self._synced_order_traded.get(order_id, 0.0)
+                self._synced_order_traded[order_id] = max(previous, cumulative)
+                if cumulative <= previous:
+                    continue
+                direction, offset = _futu_trade_direction(str(row.get("trd_side", "")))
+                self.state.update_trade(
+                    GatewayTrade(
+                        trade_id=f"SIM-{order_id}-{cumulative:g}",
+                        order_id=order_id,
+                        symbol=_futu_symbol(str(row["code"]), market),
+                        direction=direction,
+                        offset=offset,
+                        price=float(row.get("dealt_avg_price", 0.0) or row.get("price", 0.0)),
+                        volume=cumulative - previous,
+                        time=str(
+                            row.get("updated_time")
+                            or row.get("create_time")
+                            or datetime.now(timezone.utc).isoformat()
+                        ),
+                    )
+                )
 
     def query_history_minute(
         self,
@@ -204,6 +245,8 @@ class FutuLiveGateway:
         self.state.update_order(order_from_vnpy(event.data))
 
     def _on_trade(self, event) -> None:
+        if self.config.paper:
+            return
         self.state.update_trade(trade_from_vnpy(event.data))
 
     def _on_tick(self, event) -> None:
@@ -211,6 +254,22 @@ class FutuLiveGateway:
 
     def _on_log(self, event) -> None:
         self.state.update_log(log_from_vnpy(event.data))
+
+
+def _resolve_order_type():
+    """下单类型:LIVE_ORDER_TYPE 环境变量控制,默认市价单。
+
+    - market / MARKET → 市价单(挂上去立即按对手价成交,不等待)
+    - limit  / LIMIT  → 限价单(挂在指定 price,等待撮合)
+    市价单可避免「闭市/无 tick 时限价单挂在最新价永不成交」的资金占用问题。
+    vnpy OrderType 在函数内延迟导入,避免顶层依赖远程测试环境无 vnpy。
+    """
+    from vnpy.trader.constant import OrderType
+
+    raw = os.getenv("LIVE_ORDER_TYPE", "market").strip().lower()
+    if raw in {"limit", "limit_price"}:
+        return OrderType.LIMIT
+    return OrderType.MARKET
 
 
 class TigerLiveGateway:
@@ -300,9 +359,9 @@ class TigerLiveGateway:
                 us_default_exchange=_TIGER_US_DEFAULT_EXCHANGE,
             ),
             direction=Direction(direction),
-            type=OrderType.LIMIT,
+            type=_resolve_order_type(),
             volume=volume,
-            price=price,
+            price=price if price > 0 else 0.0,
             offset=Offset(offset),
         )
         return self._require_main_engine().send_order(req, _TIGER_GATEWAY_NAME)
@@ -329,6 +388,9 @@ class TigerLiveGateway:
             ),
         )
         self._require_main_engine().cancel_order(req, _TIGER_GATEWAY_NAME)
+
+    def sync_trades(self) -> None:
+        pass
 
     def query_history_minute(
         self,
@@ -441,11 +503,35 @@ def _futu_route_market(
 
 def _clean_symbol(symbol: str) -> str:
     value = symbol.strip().upper()
+    market = ""
     if value.endswith(".HK") or value.endswith(".US"):
-        return value[:-3]
-    if value.startswith("HK.") or value.startswith("US."):
-        return value[3:]
+        market = value[-2:]
+        value = value[:-3]
+    elif value.startswith("HK.") or value.startswith("US."):
+        market = value[:2]
+        value = value[3:]
+    if (market == "HK" or (not market and value.isdigit())) and value.isdigit():
+        return value.zfill(5)
     return value
+
+
+def _futu_symbol(code: str, market: str) -> str:
+    value = code.strip().upper()
+    if "." in value:
+        prefix, symbol = value.split(".", 1)
+        return f"{symbol}.{prefix}"
+    return f"{value}.{market.upper()}"
+
+
+def _futu_trade_direction(side: str) -> tuple[str, str]:
+    value = side.upper()
+    if value == "BUY_BACK":
+        return "多", "平"
+    if value == "SELL_SHORT":
+        return "空", "开"
+    if value == "SELL":
+        return "空", "平"
+    return "多", "开"
 
 
 def _resolve_exchange(
@@ -512,4 +598,3 @@ def _bars_from_vnpy(symbol: str, raw_bars) -> list[Bar]:
             )
         )
     return bars
-

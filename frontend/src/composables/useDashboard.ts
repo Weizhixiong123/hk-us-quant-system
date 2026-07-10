@@ -68,7 +68,9 @@ export function useDashboard() {
         fetchDashboard(),
         fetchLiveSettings().catch(() => null)
       ]);
-      dashboard.value = dashboardSnapshot;
+      if (streamState.value !== "live" || dashboard.value === null) {
+        dashboard.value = dashboardSnapshot;
+      }
       liveSettings.value = settingsSnapshot;
     } catch (err) {
       error.value = err instanceof Error ? err.message : "加载失败";

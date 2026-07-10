@@ -21,13 +21,19 @@
 
 html {
   min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   background: #ffffff;
 }
 
 body {
   margin: 0;
+  width: 100%;
+  max-width: 100%;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
   color: var(--ink);
   font-family: "Bahnschrift", "Aptos", "Microsoft YaHei UI", sans-serif;
 }
@@ -1318,7 +1324,8 @@ html {
 }
 
 .ops-shell {
-  width: min(1720px, calc(100vw - 32px));
+  width: calc(100% - 32px);
+  max-width: 1720px;
   margin: 0 auto;
   padding: 16px 0 28px;
 }
@@ -1426,6 +1433,7 @@ html {
   grid-template-columns: 200px minmax(0, 1fr);
   gap: 20px;
   align-items: stretch;
+  min-width: 0;
   margin-top: 20px;
 }
 
@@ -1433,6 +1441,7 @@ html {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
   padding: 14px;
   border-radius: 8px;
 }
@@ -1447,6 +1456,7 @@ html {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   min-height: 42px;
   border: 0;
   border-radius: 7px;
@@ -1458,6 +1468,13 @@ html {
 
 .side-menu button {
   padding: 0 12px;
+}
+
+.side-menu button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .side-menu button.active {
@@ -2117,7 +2134,8 @@ html {
 
 @media (max-width: 860px) {
   .ops-shell {
-    width: min(100% - 18px, 1720px);
+    width: calc(100% - 18px);
+    max-width: 1720px;
     padding: 9px 0 22px;
   }
 
@@ -3453,29 +3471,27 @@ html {
   margin-bottom: 8px;
 }
 
-.strategy-param-group:nth-child(1) .strategy-param-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.strategy-param-group:nth-child(2) .strategy-param-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.strategy-param-group:nth-child(3) .strategy-param-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
-.strategy-param-group:nth-child(4) .strategy-param-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+/* 自适应列数:每个参数框宽度限制在 150-220px,按可用宽度自动排成 2-5 列。
+   不再依赖 nth-child 硬编码列数,避免新增/调整参数组后框过宽或换行错乱。 */
+.strategy-param-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 9px;
 }
 
 .strategy-param-field {
   gap: 5px;
-  padding: 10px 11px;
+  padding: 9px 10px;
 }
 
 .strategy-param-input input {
-  height: 32px;
+  height: 30px;
+  padding: 0 8px;
+}
+
+.strategy-param-input strong {
+  min-width: 34px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 .strategy-rail-card {
@@ -3506,10 +3522,8 @@ html {
 }
 
 @media (max-width: 1180px) {
-  .strategy-param-group:nth-child(1) .strategy-param-grid,
-  .strategy-param-group:nth-child(3) .strategy-param-grid,
-  .strategy-param-group:nth-child(4) .strategy-param-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .strategy-detail-grid {
+    grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.8fr);
   }
 }
 
@@ -3519,11 +3533,9 @@ html {
   }
 }
 
-@media (max-width: 860px) {
-  .strategy-param-group:nth-child(1) .strategy-param-grid,
-  .strategy-param-group:nth-child(2) .strategy-param-grid,
-  .strategy-param-group:nth-child(3) .strategy-param-grid,
-  .strategy-param-group:nth-child(4) .strategy-param-grid {
+/* 600px 以下参数框降到单列 */
+@media (max-width: 600px) {
+  .strategy-param-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -3834,6 +3846,44 @@ html {
   font-size: 13px;
 }
 
+.unassigned-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(199, 71, 64, 0.22);
+  border-radius: 8px;
+  color: var(--loss);
+  background: rgba(199, 71, 64, 0.07);
+}
+
+.unassigned-action-bar > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.unassigned-action-bar span {
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.unassigned-action-bar small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.text-button.danger {
+  color: var(--loss);
+  border-color: rgba(199, 71, 64, 0.28);
+  background: rgba(255, 247, 246, 0.9);
+}
+
 .position-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3921,49 +3971,56 @@ html {
 
 .position-filter-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 0 18px 14px;
   overflow: hidden;
   border: 1px solid rgba(24, 32, 31, 0.1);
-  border-radius: 7px;
+  border-radius: 8px;
+  background: rgba(247, 249, 247, 0.6);
+  padding: 3px;
 }
 
 .position-filter-tabs button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 38px;
+  gap: 6px;
+  min-height: 36px;
   border: 0;
-  color: var(--ink);
-  background: rgba(248, 250, 248, 0.76);
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
+  transition: background 0.12s, color 0.12s;
 }
 
-.position-filter-tabs button + button {
-  border-left: 1px solid rgba(24, 32, 31, 0.09);
+.position-filter-tabs button:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.65);
 }
 
 .position-filter-tabs button.active {
-  color: white;
-  background: var(--accent-dark);
+  color: var(--accent-dark);
+  background: white;
+  box-shadow: 0 1px 4px rgba(24, 32, 31, 0.09);
 }
 
 .position-filter-tabs strong {
   display: grid;
   place-items: center;
-  min-width: 21px;
-  height: 21px;
+  min-width: 20px;
+  height: 20px;
   padding: 0 5px;
   border-radius: 999px;
-  background: rgba(24, 32, 31, 0.08);
+  background: rgba(24, 32, 31, 0.07);
   font-size: 10px;
+  font-weight: 800;
 }
 
 .position-filter-tabs button.active strong {
-  color: var(--accent-dark);
-  background: white;
+  color: white;
+  background: var(--accent-dark);
 }
 
 .position-table-wrap {
@@ -4089,11 +4146,13 @@ html {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 48px;
+  min-width: 62px;
   min-height: 25px;
+  padding: 0 8px;
   border-radius: 5px;
   font-size: 10px;
   font-weight: 800;
+  white-space: nowrap;
 }
 
 .position-risk.pass {
@@ -4106,7 +4165,17 @@ html {
   background: rgba(224, 108, 24, 0.1);
 }
 
-.position-risk.blocked {
+.position-risk.triggered {
+  color: #b7560f;
+  background: rgba(224, 108, 24, 0.12);
+}
+
+.position-risk.closing {
+  color: var(--accent-dark);
+  background: rgba(21, 155, 141, 0.12);
+}
+
+.position-risk.manual {
   color: var(--loss);
   background: rgba(199, 71, 64, 0.1);
 }
@@ -4232,7 +4301,15 @@ html {
   background: #e06c18;
 }
 
-.risk-dot.blocked {
+.risk-dot.triggered {
+  background: #e06c18;
+}
+
+.risk-dot.closing {
+  background: var(--accent);
+}
+
+.risk-dot.manual {
   background: var(--loss);
 }
 
@@ -4260,23 +4337,31 @@ html {
   .position-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .unassigned-action-bar,
+  .unassigned-action-bar > div {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .unassigned-action-bar small {
+    white-space: normal;
+  }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 540px) {
   .position-page-head {
     align-items: stretch;
     flex-direction: column;
   }
 
   .position-metrics,
-  .position-rail,
-  .position-filter-tabs {
+  .position-rail {
     grid-template-columns: 1fr;
   }
 
-  .position-filter-tabs button + button {
-    border-top: 1px solid rgba(24, 32, 31, 0.09);
-    border-left: 0;
+  .position-filter-tabs {
+    grid-template-columns: 1fr 1fr;
   }
 }
 

@@ -1,6 +1,7 @@
 import type {
   BacktestRequest,
   BacktestResult,
+  CloseUnassignedPositionsResult,
   DashboardSnapshot,
   LiveSettingsSnapshot,
   LiveSettingsUpdate,
@@ -57,6 +58,10 @@ export function saveLiveSettings(payload: LiveSettingsUpdate): Promise<LiveSetti
 
 export function reloadRuntime(): Promise<RuntimeReloadResult> {
   return request<RuntimeReloadResult>("/runtime/reload", { method: "POST" });
+}
+
+export function closeUnassignedPositions(): Promise<CloseUnassignedPositionsResult> {
+  return request<CloseUnassignedPositionsResult>("/positions/unassigned/close", { method: "POST" });
 }
 
 export function fetchSymbolName(symbol: string, market: Market): Promise<SymbolNameLookup> {

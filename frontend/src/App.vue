@@ -12,7 +12,6 @@ import {
   LayoutDashboard,
   LineChart,
   ListChecks,
-  Package,
   Radio,
   RefreshCw,
   Settings2,
@@ -131,7 +130,7 @@ const navItems: NavItem[] = [
   { label: "实盘配置", icon: Settings2, view: "settings" },
   { label: "策略管理", icon: ClipboardList, view: "strategies" },
   { label: "候选股票", icon: ListChecks, view: "candidates" },
-  { label: "持仓管理", icon: Package, view: "positions" },
+  { label: "持仓风控", icon: ShieldCheck, view: "positions" },
   { label: "成交记录", icon: Database, view: "trades" },
   { label: "运行日志", icon: FileText, view: "logs" }
 ];
@@ -186,12 +185,12 @@ const queriedStocks = computed<QueryRow[]>(() =>
     const tags = item.tags;
     const reason = tags.length > 0 ? tags.join(" / ") : "等待信号";
     const source = querySourceFromTags(tags, reason);
-    const strategyTwo = isTrendCandidate(reason);
+    const strategyTwo = item.strategy_id === "trend_portfolio";
     const status = resolveQueryStatus(reason, item.market, item.triggered);
     const bd = item.score_breakdown;
     const fresh = item.freshness ?? 1;
     const tooltip = bd
-      ? `consistency ${bd.consistency.toFixed(2)} · volume ${bd.volume_ratio.toFixed(2)} · atr ${bd.atr_quality.toFixed(2)} · trend ${bd.trend_filter.toFixed(2)} · liquidity ${bd.liquidity_rank.toFixed(2)}${bd.weighted !== undefined ? ` · 加权 ${bd.weighted.toFixed(2)}` : ""} · freshness ×${fresh.toFixed(2)}${item.shortable ? " · 可做空 +0.05" : ""}`
+      ? `候选评分 ${item.score.toFixed(2)} · consistency ${bd.consistency.toFixed(2)} · volume ${bd.volume_ratio.toFixed(2)} · atr ${bd.atr_quality.toFixed(2)} · trend ${bd.trend_filter.toFixed(2)} · liquidity ${bd.liquidity_rank.toFixed(2)}${bd.weighted !== undefined ? ` · 加权 ${bd.weighted.toFixed(2)}` : ""} · freshness ${fresh.toFixed(2)}${item.shortable ? " · 可做空 +0.05" : ""}`
       : `score ${item.score} (无明细,旧事件)`;
 
     return {
@@ -1178,6 +1177,7 @@ function logTime(value: string): string {
         <PositionManagement
           v-else-if="activeView === 'positions'"
           :account="account"
+          :orders="orders"
           :positions="positions"
           :strategies="strategies"
           :loading="loading"

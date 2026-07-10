@@ -26,3 +26,6 @@ backend/data/backtest-cache/
 
 # Local release packages
 release/
+
+# Work/scratch area
+work/

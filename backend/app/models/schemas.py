@@ -71,6 +71,7 @@ class WatchSymbol(BaseModel):
     symbol: str
     name: str
     market: Market
+    strategy_id: str = "intraday_macd"
     last_price: float
     change_pct: float
     turnover: float
@@ -286,6 +287,9 @@ class IntradayParamsSettings(BaseModel):
     fast_ema: int = Field(default=12, ge=2, le=60)
     slow_ema: int = Field(default=26, ge=3, le=120)
     signal_ema: int = Field(default=9, ge=2, le=60)
+    slow_k_minutes: int = Field(default=15, ge=3, le=120, description="大周期 K 线(分钟)")
+    mid_k_minutes: int = Field(default=5, ge=1, le=60, description="中周期 K 线(分钟)")
+    fast_k_minutes: int = Field(default=3, ge=1, le=30, description="小周期/触发 K 线(分钟)")
     position_fraction_pct: float = Field(default=10.0, gt=0, le=100)
     max_positions: int = Field(default=3, ge=1, le=20)
     max_daily_loss_pct: float = Field(default=3.0, gt=0, le=100)
@@ -299,6 +303,8 @@ class IntradayParamsSettings(BaseModel):
     trailing_enabled: bool = True
     trailing_start_pct: float = Field(default=2.0, ge=0, le=100, description="动态止盈启动浮盈(%)")
     trailing_stop_pct: float = Field(default=1.0, ge=0, le=100, description="动态止盈回撤(%)")
+    auto_min_score: float = Field(default=0.65, ge=0, le=1, description="自动选股最低评分阈值")
+    max_auto_candidates: int = Field(default=40, ge=1, le=1000, description="每个市场自动候选数量上限")
 
 
 class SymbolNameLookup(BaseModel):

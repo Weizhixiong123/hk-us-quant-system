@@ -229,7 +229,7 @@ watch(
 
     <div class="universe-summary">
       <strong>当前候选池 = 手动候选 + 自动筛选</strong>
-      <span>{{ manualCountLabel }} · 到达对应市场时自动叠加盘前筛选结果</span>
+      <span>{{ manualCountLabel }} · 自动候选按评分和额度上限加入</span>
     </div>
 
     <div class="manual-workbench">

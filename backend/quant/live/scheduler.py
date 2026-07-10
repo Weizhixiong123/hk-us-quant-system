@@ -45,11 +45,13 @@ class LiveScheduler:
         holidays: HolidayCalendar | None = None,
         open_after_minutes: int = 30,
         close_before_minutes: int = 90,
+        bar_interval_minutes: int = 3,
     ) -> None:
         self.markets = tuple(markets)
         self.holidays = holidays
         self.open_after_minutes = open_after_minutes
         self.close_before_minutes = close_before_minutes
+        self.bar_interval_minutes = bar_interval_minutes
         self._dispatched: set[tuple[ScheduleHook, Market, datetime]] = set()
 
     def due_actions(self, at: datetime) -> list[SchedulerAction]:
@@ -59,6 +61,7 @@ class LiveScheduler:
             self.holidays,
             self.open_after_minutes,
             self.close_before_minutes,
+            self.bar_interval_minutes,
         )
         fresh_actions: list[SchedulerAction] = []
         for action in actions:
@@ -79,6 +82,7 @@ def build_due_actions(
     holidays: HolidayCalendar | None = None,
     open_after_minutes: int = 30,
     close_before_minutes: int = 90,
+    bar_interval_minutes: int = 3,
 ) -> list[SchedulerAction]:
     actions: list[SchedulerAction] = []
     for market in markets:
@@ -108,7 +112,7 @@ def build_due_actions(
                     reason="尾盘强制清仓日内持仓",
                 )
             )
-        elif is_market_open(local, market, holidays) and is_bar_close(local, 3, market):
+        elif is_market_open(local, market, holidays) and is_bar_close(local, bar_interval_minutes, market):
             if is_intraday_entry_window(
                 local,
                 market,
@@ -122,7 +126,7 @@ def build_due_actions(
                         strategy_id="intraday_macd",
                         market=market,
                         scheduled_for=_minute(local),
-                        reason="3min 收线后检查日内开仓(三周期柱动量)",
+                        reason=f"{bar_interval_minutes}min 收线后检查日内开仓(三周期柱动量)",
                     )
                 )
             actions.append(
@@ -131,7 +135,7 @@ def build_due_actions(
                     strategy_id="intraday_macd",
                     market=market,
                     scheduled_for=_minute(local),
-                    reason="3min 收线后检查日内持仓退出",
+                    reason=f"{bar_interval_minutes}min 收线后检查日内持仓退出",
                 )
             )
 

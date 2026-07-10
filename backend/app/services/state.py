@@ -24,7 +24,7 @@ from app.models.schemas import (
     WatchSymbol,
 )
 from quant.data.universe import all_symbols
-from quant.indicators.scoring import ScoreInputs, score_for_symbol
+from quant.indicators.scoring import ScoreBreakdown, ScoreInputs, score_for_symbol
 from quant.live.params import LiveParams
 from quant.live.settings import INTRADAY_PARAM_DEFAULTS, load_live_settings, save_live_settings
 from quant.live.state import LiveGatewayState
@@ -85,6 +85,18 @@ def _score_inputs_for_signal(event: LiveEvent, now: datetime) -> ScoreInputs:
     )
 
 
+def _is_non_candidate_signal(event: LiveEvent) -> bool:
+    payload = event.payload or {}
+    if bool(payload.get("submitted", False)):
+        return False
+    reasons = [str(reason) for reason in payload.get("reasons", [])]
+    return any(
+        marker in reason
+        for reason in reasons
+        for marker in ("下单失败", "暂停自动下单", "网关未连接", "持仓不足", "不满足可做空校验")
+    )
+
+
 def _is_shortable(symbol: str) -> bool:
     """从 manual universe 配置里查 shortable 标记。symbol 不在 manual 里 → False。"""
     try:
@@ -98,6 +110,11 @@ def _is_shortable(symbol: str) -> bool:
         if str(item.get("symbol", "")).upper() == symbol.upper():
             return bool(item.get("shortable", False))
     return False
+
+
+def _candidate_score(breakdown: ScoreBreakdown) -> float:
+    """候选评分保持为入选时的质量分；freshness 仅作为独立状态展示。"""
+    return min(breakdown.weighted + breakdown.shortable_bonus, 1.0)
 
 
 def _current_manual_symbol_keys() -> set[str]:
@@ -288,6 +305,7 @@ class AppState:
                 symbol="MSFT",
                 name="Microsoft",
                 market="US",
+                strategy_id="trend_portfolio",
                 last_price=478.6,
                 change_pct=0.38,
                 turnover=5_170_000_000,
@@ -299,6 +317,7 @@ class AppState:
                 symbol="0700.HK",
                 name="腾讯控股",
                 market="HK",
+                strategy_id="trend_portfolio",
                 last_price=389.4,
                 change_pct=1.12,
                 turnover=1_920_000_000,
@@ -849,10 +868,11 @@ class AppState:
     def _live_orders(self, snapshot: dict | None) -> list[Order]:
         if not snapshot:
             return []
+        strategy_by_symbol = self._strategy_by_symbol()
         return [
             Order(
                 id=item.order_id,
-                strategy_id="live",
+                strategy_id=strategy_by_symbol.get(_symbol_key(item.symbol), "live"),
                 symbol=item.symbol,
                 market=_market_from_symbol(item.symbol),
                 side=_order_side(item.direction, item.offset),
@@ -892,15 +912,20 @@ class AppState:
     def trade_history(self, limit: int = 200) -> list[Trade]:
         events = list_live_events(kind="trade", db_path=self._current_db_path(), limit=limit)
         trades: list[Trade] = []
+        seen_ids: set[str] = set()
         for event in events:
             payload = event.payload or {}
             symbol = str(payload.get("symbol", event.symbol or ""))
             if not symbol:
                 continue
             order_id = str(payload.get("order_id", ""))
+            trade_id = str(payload.get("trade_id") or f"{order_id}:{symbol}")
+            if trade_id in seen_ids:
+                continue
+            seen_ids.add(trade_id)
             trades.append(
                 Trade(
-                    id=str(payload.get("trade_id") or f"{order_id}:{symbol}"),
+                    id=trade_id,
                     order_id=order_id,
                     symbol=symbol,
                     market=_market_from_symbol(symbol),
@@ -962,6 +987,8 @@ class AppState:
         for event in signal_events:
             if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
                 continue
+            if _is_non_candidate_signal(event):
+                continue
             symbol = event.symbol or ""
             if not symbol:
                 continue
@@ -993,10 +1020,11 @@ class AppState:
                     symbol=symbol,
                     name=names.get(key, symbol),
                     market=_market_from_symbol(symbol),
+                    strategy_id=event.strategy_id,
                     last_price=0.0,
                     change_pct=0.0,
                     turnover=0.0,
-                    score=bd.total,
+                    score=_candidate_score(bd),
                     tags=list(payload.get("reasons", [])),
                     updated_at=event.created_at,
                     triggered=key in triggered_today,
@@ -1032,10 +1060,11 @@ class AppState:
                         symbol=symbol,
                         name=names.get(key, symbol),
                         market=market,
+                        strategy_id=event.strategy_id,
                         last_price=0.0,
                         change_pct=0.0,
                         turnover=0.0,
-                        score=bd.total,
+                        score=_candidate_score(bd),
                         tags=_selection_tags(
                             event.strategy_id,
                             str(payload.get("selection_mode", "auto")),
@@ -1065,6 +1094,14 @@ class AppState:
             if not event.symbol or not bool(payload.get("submitted", False)):
                 continue
             strategies.setdefault(_symbol_key(event.symbol), event.strategy_id)
+        for event in list_live_events(kind="trade", limit=100, db_path=self._current_db_path()):
+            payload = event.payload or {}
+            if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
+                continue
+            symbol = event.symbol or str(payload.get("symbol", ""))
+            if not symbol or not _is_open_offset(str(payload.get("offset", ""))):
+                continue
+            strategies.setdefault(_symbol_key(symbol), event.strategy_id)
         return strategies
 
     def _live_signals(self) -> list[Signal]:
@@ -1162,6 +1199,11 @@ def _order_side(direction: str, offset: str) -> str:
     if is_close:
         return "cover"
     return "short" if is_short_direction else "buy"
+
+
+def _is_open_offset(offset: str) -> bool:
+    value = offset.upper()
+    return "开" in offset or "OPEN" in value
 
 
 def _order_status(status: str, traded: float = 0.0, volume: float = 0.0) -> str:
