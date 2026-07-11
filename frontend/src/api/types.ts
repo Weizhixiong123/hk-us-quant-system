@@ -287,6 +287,42 @@ export interface IntradayParamsSettings {
   max_auto_candidates: number;
 }
 
+export interface MaAtrIntradayParamsSettings {
+  slow_k_minutes: number;
+  mid_k_minutes: number;
+  fast_k_minutes: number;
+  slow_fast_ema: number;
+  slow_slow_ema: number;
+  mid_fast_ema: number;
+  mid_slow_ema: number;
+  fast_fast_ema: number;
+  fast_slow_ema: number;
+  macd_fast: number;
+  macd_slow: number;
+  macd_signal: number;
+  atr_period: number;
+  atr_multiplier: number;
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  trailing_enabled: boolean;
+  trailing_start_pct: number;
+  trailing_stop_pct: number;
+  position_fraction_pct: number;
+  max_positions: number;
+  max_daily_loss_pct: number;
+  open_after_minutes: number;
+  close_before_minutes: number;
+  min_turnover: number;
+  min_amplitude_pct: number;
+  max_amplitude_pct: number;
+  min_price: number;
+  min_turnover_rate: number;
+  auto_min_score: number;
+  max_auto_candidates: number;
+  score_half_life_hours: number;
+  shortable_bonus_pts: number;
+}
+
 export interface LiveSettingsSnapshot {
   runtime: LiveRuntimeSettings;
   futu: FutuLiveSettings;
@@ -294,6 +330,7 @@ export interface LiveSettingsSnapshot {
   safety: LiveSafetySettings;
   intraday_universe: IntradayUniverseSettings;
   intraday_params: IntradayParamsSettings;
+  ma_atr_intraday_params: MaAtrIntradayParamsSettings;
   saved_at: string;
   restart_required: boolean;
 }
@@ -308,6 +345,7 @@ export interface LiveSettingsUpdate {
   safety?: Partial<LiveSafetySettings>;
   intraday_universe?: IntradayUniverseSettings;
   intraday_params?: IntradayParamsSettings;
+  ma_atr_intraday_params?: MaAtrIntradayParamsSettings;
 }
 
 export interface RuntimeReloadResult {

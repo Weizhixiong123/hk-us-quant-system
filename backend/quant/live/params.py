@@ -47,14 +47,71 @@ class PortfolioParams:
     hot_gain_block_pct: float = 40.0
 
 
+@dataclass(frozen=True)
+class MaAtrIntradayParams:
+    """策略三：多周期 MA + MACD + ATR 日内参数。"""
+    # === 周期设置 ===
+    slow_k_minutes: int = 60        # 大周期 K 线(分钟),默认 1h
+    mid_k_minutes: int = 10         # 中周期 K 线(分钟)
+    fast_k_minutes: int = 5         # 小周期 K 线(分钟)
+
+    # === 大周期 EMA ===
+    slow_fast_ema: int = 3          # 大周期快线
+    slow_slow_ema: int = 8          # 大周期慢线
+
+    # === 中周期 EMA ===
+    mid_fast_ema: int = 11          # 中周期快线
+    mid_slow_ema: int = 30          # 中周期慢线
+
+    # === 小周期 EMA ===
+    fast_fast_ema: int = 3          # 小周期快线
+    fast_slow_ema: int = 8          # 小周期慢线
+
+    # === MACD 参数 ===
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+
+    # === ATR 参数 ===
+    atr_period: int = 5             # ATR 周期
+    atr_multiplier: float = 1.2     # ATR 止损倍数
+
+    # === 止盈止损 ===
+    stop_loss_pct: float = 1.5      # 固定止损(%)
+    take_profit_pct: float = 3.0    # 固定止盈(%)
+    trailing_enabled: bool = True
+    trailing_start_pct: float = 2.0 # 动态止盈启动浮盈(%)
+    trailing_stop_pct: float = 1.0  # 从最高点回撤(%)后平仓
+
+    # === 仓位/风控 ===
+    position_fraction_pct: float = 10.0
+    max_positions: int = 3
+    max_daily_loss_pct: float = 3.0
+
+    # === 盘前筛选(复用策略一) ===
+    open_after_minutes: int = 30
+    close_before_minutes: int = 90
+    min_turnover: float = 5_000_000.0
+    min_amplitude_pct: float = 2.0
+    max_amplitude_pct: float = 8.0
+    min_price: float = 2.0
+    min_turnover_rate: float = 0.0
+    auto_min_score: float = 0.65
+    max_auto_candidates: int = 40
+    score_half_life_hours: float = 4.0
+    shortable_bonus_pts: float = 0.05
+
+
 _INTRADAY_FIELDS = {f.name: f.type for f in fields(IntradayParams)}
 _PORTFOLIO_FIELDS = {f.name: f.type for f in fields(PortfolioParams)}
+_MA_ATR_FIELDS = {f.name: f.type for f in fields(MaAtrIntradayParams)}
 
 
 class LiveParams:
     def __init__(self) -> None:
         self.intraday = IntradayParams()
         self.portfolio = PortfolioParams()
+        self.ma_atr = MaAtrIntradayParams()
 
     def update(self, strategy_id: str, values: Mapping[str, Any]) -> None:
         if strategy_id == "intraday_macd":
@@ -63,6 +120,10 @@ class LiveParams:
             self.intraday = updated
         elif strategy_id == "trend_portfolio":
             self.portfolio = _merge(self.portfolio, values, _PORTFOLIO_FIELDS)
+        elif strategy_id == "ma_atr_intraday":
+            updated = _merge(self.ma_atr, values, _MA_ATR_FIELDS)
+            _validate_ma_atr(updated)
+            self.ma_atr = updated
 
 
 def _merge(current, values: Mapping[str, Any], known: dict[str, Any]):
@@ -131,3 +192,26 @@ def _validate_intraday(params: IntradayParams) -> None:
         params.min_turnover_rate,
     ) < 0:
         raise ValueError("盘前筛选参数不能小于 0")
+
+
+def _validate_ma_atr(params: MaAtrIntradayParams) -> None:
+    if params.fast_k_minutes >= params.mid_k_minutes or params.mid_k_minutes >= params.slow_k_minutes:
+        raise ValueError("三周期 K 线必须满足:小周期 < 中周期 < 大周期")
+    if not 2 <= params.macd_fast <= 60 or not 3 <= params.macd_slow <= 120:
+        raise ValueError("MACD 周期范围无效")
+    if params.macd_fast >= params.macd_slow:
+        raise ValueError("MACD 快线必须小于慢线")
+    if not 2 <= params.macd_signal <= 60:
+        raise ValueError("MACD 信号线周期必须在 2 到 60 之间")
+    if not 1 <= params.atr_period <= 60:
+        raise ValueError("ATR 周期必须在 1 到 60 之间")
+    if params.atr_multiplier <= 0:
+        raise ValueError("ATR 止损倍数必须大于 0")
+    if not 0 < params.position_fraction_pct <= 100:
+        raise ValueError("单次开仓仓位必须大于 0 且不超过 100%")
+    if not 1 <= params.max_positions <= 20:
+        raise ValueError("最大同时持仓必须在 1 到 20 之间")
+    if not 0 < params.max_daily_loss_pct <= 100:
+        raise ValueError("单日最大亏损必须大于 0 且不超过 100%")
+    if not 0 <= params.trailing_start_pct <= 100 or not 0 <= params.trailing_stop_pct <= 100:
+        raise ValueError("动态止盈参数必须在 0 到 100 之间")

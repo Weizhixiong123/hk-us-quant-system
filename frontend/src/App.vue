@@ -101,6 +101,19 @@ const {
 const activeView = ref<ViewName>("dashboard");
 const selectedStrategyId = ref<string | null>(null);
 
+// 策略切换提示 —— 点击策略卡时短暂弹出
+const strategyToast = ref<{ id: string; name: string } | null>(null);
+let strategyToastTimer: number | undefined;
+function selectStrategy(strategy: { id: string; name: string }) {
+  if (selectedStrategyId.value === strategy.id) return;
+  selectedStrategyId.value = strategy.id;
+  strategyToast.value = { id: strategy.id, name: strategy.name };
+  if (strategyToastTimer) window.clearTimeout(strategyToastTimer);
+  strategyToastTimer = window.setTimeout(() => {
+    strategyToast.value = null;
+  }, 2200);
+}
+
 const tradeHistory = ref<Trade[]>([]);
 
 async function loadTradeHistory(): Promise<void> {
@@ -1036,7 +1049,7 @@ function logTime(value: string): string {
                 class="strategy-switch-card"
                 :class="{ selected: selectedStrategy?.id === strategy.id, muted: !strategy.enabled }"
                 type="button"
-                @click="selectedStrategyId = strategy.id"
+                @click="selectStrategy(strategy)"
               >
                 <span class="strategy-select-dot" />
                 <span class="strategy-switch-icon">
@@ -1296,5 +1309,12 @@ function logTime(value: string): string {
         <strong>{{ error ? "异常" : "正常运行" }}</strong>
       </span>
     </footer>
+
+    <!-- 策略切换提示 -->
+    <Transition name="fade">
+      <div v-if="strategyToast" class="strategy-toast" :key="strategyToast.id">
+        <span>{{ strategyToast.name }}</span>
+      </div>
+    </Transition>
   </main>
 </template>

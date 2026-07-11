@@ -307,6 +307,48 @@ class IntradayParamsSettings(BaseModel):
     max_auto_candidates: int = Field(default=40, ge=1, le=1000, description="每个市场自动候选数量上限")
 
 
+class MaAtrIntradayParamsSettings(BaseModel):
+    """策略三：多周期 MA + MACD + ATR 日内参数。"""
+    # 周期
+    slow_k_minutes: int = Field(default=60, ge=3, le=120, description="大周期K线(分钟)")
+    mid_k_minutes: int = Field(default=10, ge=1, le=60, description="中周期K线(分钟)")
+    fast_k_minutes: int = Field(default=5, ge=1, le=30, description="小周期K线(分钟)")
+    # 三周期快慢 MA
+    slow_fast_ema: int = Field(default=3, ge=1, le=200, description="大周期快线EMA")
+    slow_slow_ema: int = Field(default=8, ge=1, le=400, description="大周期慢线EMA")
+    mid_fast_ema: int = Field(default=11, ge=1, le=200, description="中周期快线EMA")
+    mid_slow_ema: int = Field(default=30, ge=1, le=400, description="中周期慢线EMA")
+    fast_fast_ema: int = Field(default=3, ge=1, le=200, description="小周期快线EMA")
+    fast_slow_ema: int = Field(default=8, ge=1, le=400, description="小周期慢线EMA")
+    # MACD
+    macd_fast: int = Field(default=12, ge=2, le=60, description="MACD 快线")
+    macd_slow: int = Field(default=26, ge=3, le=120, description="MACD 慢线")
+    macd_signal: int = Field(default=9, ge=2, le=60, description="MACD 信号线")
+    # ATR
+    atr_period: int = Field(default=5, ge=1, le=60, description="ATR 周期")
+    atr_multiplier: float = Field(default=1.2, gt=0, le=10, description="ATR 止损倍数")
+    # 止盈止损
+    stop_loss_pct: float = Field(default=1.5, ge=0, le=100, description="固定止损(%)")
+    take_profit_pct: float = Field(default=3.0, ge=0, le=100, description="固定止盈(%)")
+    trailing_enabled: bool = True
+    trailing_start_pct: float = Field(default=2.0, ge=0, le=100, description="动态止盈启动浮盈(%)")
+    trailing_stop_pct: float = Field(default=1.0, ge=0, le=100, description="动态止盈回撤(%)")
+    # 仓位/风控
+    position_fraction_pct: float = Field(default=10.0, gt=0, le=100, description="单次开仓仓位(%)")
+    max_positions: int = Field(default=3, ge=1, le=20, description="最大同时持仓")
+    max_daily_loss_pct: float = Field(default=3.0, gt=0, le=100, description="单日最大亏损(%)")
+    # 盘前筛选
+    open_after_minutes: int = Field(default=30, ge=0, le=240, description="开盘等待(分钟)")
+    close_before_minutes: int = Field(default=90, ge=0, le=240, description="尾盘停开(分钟)")
+    min_turnover: float = Field(default=5_000_000.0, ge=0, description="成交额下限(元)")
+    min_amplitude_pct: float = Field(default=2.0, ge=0, le=100, description="前日振幅下限(%)")
+    max_amplitude_pct: float = Field(default=8.0, ge=0, le=100, description="前日振幅上限(%)")
+    min_price: float = Field(default=2.0, ge=0, description="股价下限(元)")
+    min_turnover_rate: float = Field(default=0.0, ge=0, le=100, description="换手率下限(%)")
+    auto_min_score: float = Field(default=0.65, ge=0, le=1, description="自动选股最低评分阈值")
+    max_auto_candidates: int = Field(default=40, ge=1, le=1000, description="每个市场自动候选数量上限")
+
+
 class SymbolNameLookup(BaseModel):
     symbol: str
     market: Market
@@ -325,6 +367,7 @@ class LiveSettingsUpdate(BaseModel):
     safety: LiveSafetySettings | None = None
     intraday_universe: IntradayUniverseSettings | None = None
     intraday_params: IntradayParamsSettings | None = None
+    ma_atr_intraday_params: MaAtrIntradayParamsSettings | None = None
 
 
 class LiveSettingsSnapshot(BaseModel):
@@ -334,6 +377,7 @@ class LiveSettingsSnapshot(BaseModel):
     safety: LiveSafetySettings
     intraday_universe: IntradayUniverseSettings
     intraday_params: IntradayParamsSettings
+    ma_atr_intraday_params: MaAtrIntradayParamsSettings
     saved_at: datetime
     restart_required: bool = True
 

@@ -131,6 +131,73 @@ const TREND_PARAM_GROUPS: ParamGroup[] = [
   }
 ];
 
+const MA_ATR_PARAM_GROUPS: ParamGroup[] = [
+  {
+    title: "K线周期",
+    icon: BarChart3,
+    params: [
+      { key: "slow_k_minutes", label: "大周期", hint: "大级别趋势方向周期(分钟)", unit: "分钟", min: 5, max: 120, step: 5 },
+      { key: "mid_k_minutes", label: "中周期", hint: "中短期趋势确认周期(分钟)", unit: "分钟", min: 3, max: 60, step: 1 },
+      { key: "fast_k_minutes", label: "小周期", hint: "入场触发周期(分钟)", unit: "分钟", min: 1, max: 30, step: 1 }
+    ]
+  },
+  {
+    title: "均线参数",
+    icon: Activity,
+    params: [
+      { key: "slow_fast_ema", label: "大周期快线", hint: "1h EMA3", unit: "根", min: 1, max: 200, step: 1 },
+      { key: "slow_slow_ema", label: "大周期慢线", hint: "1h EMA8", unit: "根", min: 1, max: 400, step: 1 },
+      { key: "mid_fast_ema", label: "中周期快线", hint: "10m EMA11", unit: "根", min: 1, max: 200, step: 1 },
+      { key: "mid_slow_ema", label: "中周期慢线", hint: "10m EMA30", unit: "根", min: 1, max: 400, step: 1 },
+      { key: "fast_fast_ema", label: "小周期快线", hint: "5m EMA3", unit: "根", min: 1, max: 200, step: 1 },
+      { key: "fast_slow_ema", label: "小周期慢线", hint: "5m EMA8", unit: "根", min: 1, max: 400, step: 1 }
+    ]
+  },
+  {
+    title: "MACD + ATR",
+    icon: BarChart3,
+    params: [
+      { key: "macd_fast", label: "MACD 快线", hint: "MACD 快线周期", unit: "根", min: 2, max: 60, step: 1 },
+      { key: "macd_slow", label: "MACD 慢线", hint: "MACD 慢线周期", unit: "根", min: 3, max: 120, step: 1 },
+      { key: "macd_signal", label: "MACD 信号线", hint: "MACD DEA 平滑", unit: "根", min: 2, max: 60, step: 1 },
+      { key: "atr_period", label: "ATR 周期", hint: "真实波幅计算周期", unit: "根", min: 1, max: 60, step: 1 },
+      { key: "atr_multiplier", label: "ATR 止损倍数", hint: "ATR × 倍数 = 止损距离", unit: "倍", min: 0.5, max: 5, step: 0.1 }
+    ]
+  },
+  {
+    title: "止盈止损",
+    icon: Target,
+    params: [
+      { key: "stop_loss_pct", label: "固定止损", hint: "价格相对开仓价反向多少百分比", unit: "%", min: 0.5, max: 20, step: 0.1 },
+      { key: "take_profit_pct", label: "固定止盈", hint: "达到目标浮盈即平仓", unit: "%", min: 0.5, max: 30, step: 0.1 },
+      { key: "trailing_start_pct", label: "移动止盈启动", hint: "浮盈达到N%后开启跟踪", unit: "%", min: 0.5, max: 20, step: 0.1 },
+      { key: "trailing_stop_pct", label: "移动止盈回撤", hint: "从最高点回撤N%即平仓", unit: "%", min: 0.5, max: 10, step: 0.1 }
+    ]
+  },
+  {
+    title: "交易时段 + 盘前筛选",
+    icon: Clock3,
+    params: [
+      { key: "open_after_minutes", label: "开盘等待", hint: "开盘后N分钟才允许开仓", unit: "分钟", min: 0, max: 240, step: 5 },
+      { key: "close_before_minutes", label: "尾盘停开", hint: "收盘前N分钟停止新开仓", unit: "分钟", min: 0, max: 240, step: 5 },
+      { key: "min_turnover", label: "最低成交额", hint: "自动选股成交额门槛", unit: "元", min: 0, max: 10000000000, step: 100000 },
+      { key: "min_amplitude_pct", label: "最低振幅", hint: "前日振幅最小值", unit: "%", min: 0, max: 100, step: 0.5 },
+      { key: "max_amplitude_pct", label: "最高振幅", hint: "前日振幅最大值", unit: "%", min: 0, max: 100, step: 0.5 },
+      { key: "min_price", label: "最低股价", hint: "过滤价格过低的标的", unit: "元", min: 0, max: 100000, step: 0.5 },
+      { key: "auto_min_score", label: "评分门槛", hint: "自动选股最低评分(0~1)", unit: "", min: 0, max: 1, step: 0.05 }
+    ]
+  },
+  {
+    title: "仓位与风控",
+    icon: WalletCards,
+    params: [
+      { key: "position_fraction_pct", label: "单次开仓仓位", hint: "按账户总权益计算", unit: "%", min: 1, max: 30, step: 1 },
+      { key: "max_positions", label: "最大持仓数", hint: "日内策略同时持仓标的上限", unit: "只", min: 1, max: 10, step: 1 },
+      { key: "max_daily_loss_pct", label: "单日最大亏损", hint: "触发后当日停止新交易", unit: "%", min: 0.5, max: 10, step: 0.1 }
+    ]
+  }
+];
+
 const INTRADAY_RULES: RuleGroup[] = [
   {
     title: "信号引擎",
@@ -152,6 +219,36 @@ const TREND_RULES: RuleGroup[] = [
   },
   {
     title: "硬性约束",
+    icon: ShieldCheck,
+    items: props.strategy.risk_controls
+  }
+];
+
+const MA_ATR_RULES: RuleGroup[] = [
+  {
+    title: "信号引擎",
+    icon: BarChart3,
+    items: [
+      "1小时 EMA3/8 定多空方向",
+      "10分钟 EMA11/30 趋势确认",
+      "5分钟 EMA3/8 金叉死叉触发入场",
+      "MACD 金叉确认动能",
+      "ATR(5)动态止损保护",
+    ]
+  },
+  {
+    title: "平仓规则",
+    icon: Target,
+    items: [
+      "5分钟 EMA 下穿(多) / 上穿(空)",
+      "MACD 死叉(多) / 金叉(空)",
+      "10分钟 EMA 反转",
+      "ATR 动态止损",
+      "固定止盈 3% / 移动止盈跟踪",
+    ]
+  },
+  {
+    title: "执行约束",
     icon: ShieldCheck,
     items: props.strategy.risk_controls
   }
@@ -189,13 +286,17 @@ const stateLabel = computed(() => {
   return props.strategy.state === "running" ? "运行中" : props.strategy.state;
 });
 
-const paramGroups = computed(() =>
-  props.strategy.id === "intraday_macd" ? INTRADAY_PARAM_GROUPS : TREND_PARAM_GROUPS
-);
+const paramGroups = computed(() => {
+  if (props.strategy.id === "intraday_macd") return INTRADAY_PARAM_GROUPS;
+  if (props.strategy.id === "ma_atr_intraday") return MA_ATR_PARAM_GROUPS;
+  return TREND_PARAM_GROUPS;
+});
 
-const ruleGroups = computed(() =>
-  props.strategy.id === "intraday_macd" ? INTRADAY_RULES : TREND_RULES
-);
+const ruleGroups = computed(() => {
+  if (props.strategy.id === "intraday_macd") return INTRADAY_RULES;
+  if (props.strategy.id === "ma_atr_intraday") return MA_ATR_RULES;
+  return TREND_RULES;
+});
 
 const backtestMarkets = computed<Market[]>(() =>
   props.strategy.markets.length ? props.strategy.markets : ["HK", "US"]

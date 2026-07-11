@@ -20,7 +20,7 @@ import type {
 } from "../api/types";
 
 type RuntimeMode = "dry_run" | "sandbox" | "live";
-type LiveSettingsForm = Omit<LiveSettingsSnapshot, "intraday_params">;
+type LiveSettingsForm = Omit<LiveSettingsSnapshot, "intraday_params" | "ma_atr_intraday_params">;
 
 const loading = ref(false);
 const applying = ref(false);

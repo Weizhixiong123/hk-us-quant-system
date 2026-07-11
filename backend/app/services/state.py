@@ -26,7 +26,7 @@ from app.models.schemas import (
 from quant.data.universe import all_symbols
 from quant.indicators.scoring import ScoreBreakdown, ScoreInputs, score_for_symbol
 from quant.live.params import LiveParams
-from quant.live.settings import INTRADAY_PARAM_DEFAULTS, load_live_settings, save_live_settings
+from quant.live.settings import INTRADAY_PARAM_DEFAULTS, MA_ATR_PARAM_DEFAULTS, load_live_settings, save_live_settings
 from quant.live.state import LiveGatewayState
 from quant.live.store import LiveEvent, list_live_events, live_db_path_for_mode
 
@@ -209,6 +209,7 @@ class AppState:
                 risk_controls=[
                     "单日最大亏损 3%",
                     "单标的止损后当日禁开",
+                    "同一标的跨策略排他，已有仓位优先",
                     "美股 PDT 拦截",
                     "做空名单校验",
                     "收盘前 10 分钟强制清仓",
@@ -220,8 +221,8 @@ class AppState:
                 id="trend_portfolio",
                 name="策略二 · 中长线选股持仓",
                 description="月线定牛熊、周线确认趋势、日线择时，月度调仓。",
-                enabled=True,
-                state="running",
+                enabled=False,
+                state="idle",
                 automation="semi_auto",
                 cadence="daily / monthly",
                 markets=["HK", "US"],
@@ -242,6 +243,30 @@ class AppState:
                     "月线破位清仓",
                 ],
                 last_signal="NVDA 仍在候选池，等待日线回踩 20MA",
+                updated_at=now,
+            ),
+            StrategyConfig(
+                id="ma_atr_intraday",
+                name="策略三 · 多周期 MA + MACD + ATR",
+                description="1h 定方向 / 10m 确认 / 5m 触发 / MACD 共振 / ATR 动态止损。",
+                enabled=False,
+                state="idle",
+                automation="full_auto",
+                cadence="5min / 10min / 60min",
+                markets=["HK", "US"],
+                params={
+                    key: getattr(self.params.ma_atr, key)
+                    for key in MA_ATR_PARAM_DEFAULTS
+                },
+                risk_controls=[
+                    "ATR 动态止损",
+                    "固定止损 1.5%",
+                    "固定止盈 3%",
+                    "移动止盈 2% 启动 / 1% 回撤",
+                    "单日最大亏损 3%",
+                    "同一标的跨策略排他，已有仓位优先",
+                ],
+                last_signal=None,
                 updated_at=now,
             ),
         ]
@@ -529,6 +554,18 @@ class AppState:
     def set_strategy_enabled(self, strategy_id: str, enabled: bool) -> StrategyConfig:
         with self._lock:
             strategy = self._find_strategy(strategy_id)
+            if enabled:
+                for other_strategy in self.strategies:
+                    if other_strategy.id == strategy_id or not other_strategy.enabled:
+                        continue
+                    other_strategy.enabled = False
+                    other_strategy.state = "paused"
+                    other_strategy.updated_at = self._now()
+                    self._append_log(
+                        source=other_strategy.id,
+                        severity="info",
+                        message=f"{other_strategy.name} 已因启用 {strategy.name} 自动暂停。",
+                    )
             strategy.enabled = enabled
             strategy.state = "running" if enabled else "paused"
             strategy.updated_at = self._now()
@@ -558,6 +595,13 @@ class AppState:
                 strategy.params.update(persisted)
             if strategy_id == "intraday_macd" and "max_daily_loss_pct" in params:
                 self.account.max_daily_loss_pct = self.params.intraday.max_daily_loss_pct
+            if strategy_id == "ma_atr_intraday" and self._persist_strategy_params:
+                persisted = {
+                    key: getattr(self.params.ma_atr, key)
+                    for key in MA_ATR_PARAM_DEFAULTS
+                }
+                save_live_settings({"ma_atr_intraday_params": persisted})
+                strategy.params.update(persisted)
             self._append_log(
                 source=strategy_id,
                 severity="info",
@@ -985,7 +1029,7 @@ class AppState:
         triggered_today: set[str] = set()
         today = self._now().astimezone(_SERVER_TZ).date()
         for event in signal_events:
-            if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
+            if event.strategy_id not in {"intraday_macd", "trend_portfolio", "ma_atr_intraday"}:
                 continue
             if _is_non_candidate_signal(event):
                 continue
@@ -1089,14 +1133,14 @@ class AppState:
         strategies: dict[str, str] = {}
         for event in list_live_events(kind="signal", limit=100, db_path=self._current_db_path()):
             payload = event.payload or {}
-            if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
+            if event.strategy_id not in {"intraday_macd", "trend_portfolio", "ma_atr_intraday"}:
                 continue
             if not event.symbol or not bool(payload.get("submitted", False)):
                 continue
             strategies.setdefault(_symbol_key(event.symbol), event.strategy_id)
         for event in list_live_events(kind="trade", limit=100, db_path=self._current_db_path()):
             payload = event.payload or {}
-            if event.strategy_id not in {"intraday_macd", "trend_portfolio"}:
+            if event.strategy_id not in {"intraday_macd", "trend_portfolio", "ma_atr_intraday"}:
                 continue
             symbol = event.symbol or str(payload.get("symbol", ""))
             if not symbol or not _is_open_offset(str(payload.get("offset", ""))):

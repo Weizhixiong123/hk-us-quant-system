@@ -31,6 +31,44 @@ INTRADAY_PARAM_DEFAULTS: dict[str, int | float] = {
     "trailing_stop_pct": 1.0,
     "auto_min_score": 0.65,
     "max_auto_candidates": 40,
+    "score_half_life_hours": 4.0,
+    "shortable_bonus_pts": 0.05,
+}
+
+MA_ATR_PARAM_DEFAULTS: dict[str, int | float] = {
+    "slow_k_minutes": 60,
+    "mid_k_minutes": 10,
+    "fast_k_minutes": 5,
+    "slow_fast_ema": 3,
+    "slow_slow_ema": 8,
+    "mid_fast_ema": 11,
+    "mid_slow_ema": 30,
+    "fast_fast_ema": 3,
+    "fast_slow_ema": 8,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "atr_period": 5,
+    "atr_multiplier": 1.2,
+    "stop_loss_pct": 1.5,
+    "take_profit_pct": 3.0,
+    "trailing_enabled": 1,
+    "trailing_start_pct": 2.0,
+    "trailing_stop_pct": 1.0,
+    "position_fraction_pct": 10.0,
+    "max_positions": 3,
+    "max_daily_loss_pct": 3.0,
+    "open_after_minutes": 30,
+    "close_before_minutes": 90,
+    "min_turnover": 5_000_000.0,
+    "min_amplitude_pct": 2.0,
+    "max_amplitude_pct": 8.0,
+    "min_price": 2.0,
+    "min_turnover_rate": 0.0,
+    "auto_min_score": 0.65,
+    "max_auto_candidates": 40,
+    "score_half_life_hours": 4.0,
+    "shortable_bonus_pts": 0.05,
 }
 
 
@@ -72,6 +110,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "manual_symbols": [],
     },
     "intraday_params": INTRADAY_PARAM_DEFAULTS,
+    "ma_atr_intraday_params": MA_ATR_PARAM_DEFAULTS,
 }
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,23}$")
@@ -128,6 +167,9 @@ def public_live_settings(settings: Mapping[str, Any] | None = None) -> dict[str,
     intraday_params = value.setdefault("intraday_params", {})
     for key, default in INTRADAY_PARAM_DEFAULTS.items():
         intraday_params.setdefault(key, default)
+    ma_atr_params = value.setdefault("ma_atr_intraday_params", {})
+    for key, default in MA_ATR_PARAM_DEFAULTS.items():
+        ma_atr_params.setdefault(key, default)
     value["saved_at"] = datetime.now(timezone.utc).isoformat()
     value["restart_required"] = True
     return value
@@ -211,6 +253,33 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
             intraday_params[key] = bool(value)
         else:
             intraday_params[key] = int(value) if key in integer_keys else float(value)
+
+    ma_atr_params = settings.setdefault("ma_atr_intraday_params", {})
+    ma_atr_integer_keys = {
+        "slow_k_minutes",
+        "mid_k_minutes",
+        "fast_k_minutes",
+        "slow_fast_ema",
+        "slow_slow_ema",
+        "mid_fast_ema",
+        "mid_slow_ema",
+        "fast_fast_ema",
+        "fast_slow_ema",
+        "macd_fast",
+        "macd_slow",
+        "macd_signal",
+        "atr_period",
+        "max_positions",
+        "open_after_minutes",
+        "close_before_minutes",
+        "max_auto_candidates",
+    }
+    for key, default in MA_ATR_PARAM_DEFAULTS.items():
+        value = ma_atr_params.get(key, default)
+        if key == "trailing_enabled":
+            ma_atr_params[key] = bool(value)
+        else:
+            ma_atr_params[key] = int(value) if key in ma_atr_integer_keys else float(value)
 
     return settings
 

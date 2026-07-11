@@ -74,6 +74,29 @@ def test_app_state_dashboard_does_not_show_seed_data_without_live_account():
     assert dashboard.risk[0].status == "blocked"
 
 
+def test_intraday_strategies_declare_cross_strategy_position_exclusivity():
+    state = AppState(LiveGatewayState())
+    strategies = {strategy.id: strategy for strategy in state.strategies}
+
+    rule = "同一标的跨策略排他，已有仓位优先"
+    assert rule in strategies["intraday_macd"].risk_controls
+    assert rule in strategies["ma_atr_intraday"].risk_controls
+
+
+def test_enabling_a_strategy_pauses_every_other_strategy():
+    state = AppState()
+
+    enabled = state.set_strategy_enabled("ma_atr_intraday", True)
+    strategies = {strategy.id: strategy for strategy in state.strategies}
+
+    assert enabled.enabled is True
+    assert enabled.state == "running"
+    assert strategies["intraday_macd"].enabled is False
+    assert strategies["intraday_macd"].state == "paused"
+    assert strategies["trend_portfolio"].enabled is False
+    assert strategies["trend_portfolio"].state == "idle"
+
+
 def test_update_strategy_params_syncs_live_params():
     from quant.live.params import LiveParams
     from quant.live.state import LiveGatewayState

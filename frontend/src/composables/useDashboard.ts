@@ -91,7 +91,15 @@ export function useDashboard() {
   }
 
   async function toggleStrategy(strategy: StrategyConfig) {
-    const updated = await toggleStrategyRequest(strategy.id, !strategy.enabled);
+    const enabling = !strategy.enabled;
+    const updated = await toggleStrategyRequest(strategy.id, enabling);
+    if (enabling && dashboard.value) {
+      dashboard.value.strategies = dashboard.value.strategies.map((item) =>
+        item.id === updated.id || !item.enabled
+          ? item
+          : { ...item, enabled: false, state: "paused", updated_at: updated.updated_at }
+      );
+    }
     patchStrategy(updated);
   }
 

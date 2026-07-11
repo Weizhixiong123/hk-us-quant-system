@@ -176,6 +176,29 @@ def run_backtest(
             runs.append(symbol_run)
             continue
 
+        if request.strategy_id == "ma_atr_intraday":
+            try:
+                minutes = _load_backtest_minutes(
+                    symbol, request.market, request.start_date, request.end_date, "1m", minute_fetcher
+                )
+            except Exception as exc:
+                notes.append(f"{symbol} 1分钟线加载失败，已跳过：{exc}")
+                continue
+            slow_ema = _int_param(request.params_snapshot, "macd_slow", 26)
+            slow_k_minutes = _int_param(request.params_snapshot, "slow_k_minutes", 60)
+            minimum_minutes = (slow_ema + 1) * slow_k_minutes
+            if minutes.empty or len(minutes) < minimum_minutes:
+                notes.append(f"{symbol} 1分钟线不足（需要至少 {minimum_minutes} 根），已跳过。")
+                continue
+            symbol_run = _run_ma_atr_minutes(
+                symbol, minutes, request, allocation,
+                position_source, symbols_source,
+                allowed_entry_dates=(intraday_selection_days or {}).get(symbol),
+            )
+            _log_backtest(f"策略三回测完成 symbol={symbol} trades={len(symbol_run.trade_rows)}")
+            runs.append(symbol_run)
+            continue
+
         try:
             daily = _load_backtest_daily(symbol, request.market, request.start_date, request.end_date, fetcher)
         except Exception as exc:  # 数据源失败不应让整次回测中断
@@ -226,14 +249,15 @@ def run_backtest(
 
 
 def _ensure_minimum_trend_range(request: BacktestRequest) -> BacktestRequest:
-    if request.strategy_id != "trend_portfolio":
+    if request.strategy_id not in {"trend_portfolio", "ma_atr_intraday"}:
         return request
     try:
         start = datetime.strptime(request.start_date, "%Y-%m-%d")
         end = datetime.strptime(request.end_date, "%Y-%m-%d")
     except ValueError:
         return request
-    minimum_start = _subtract_months(end, 6)
+    min_months = 6 if request.strategy_id == "trend_portfolio" else 2
+    minimum_start = _subtract_months(end, min_months)
     if start <= minimum_start:
         return request
     return request.model_copy(update={"start_date": minimum_start.strftime("%Y-%m-%d")})
@@ -260,6 +284,8 @@ def _auto_select_symbols(
     universe: list[SymbolInfo],
 ) -> tuple[list[str], dict[str, set[date]] | None]:
     if request.strategy_id == "intraday_macd":
+        return _auto_select_intraday_symbols(request, fetcher, universe)
+    if request.strategy_id == "ma_atr_intraday":
         return _auto_select_intraday_symbols(request, fetcher, universe)
     if request.strategy_id == "trend_portfolio":
         return _auto_select_trend_symbols(request, universe), None
@@ -653,6 +679,201 @@ def _as_datetime(value: object) -> datetime:
     if isinstance(value, datetime):
         return value
     return pd.Timestamp(value).to_pydatetime()
+
+
+def _run_ma_atr_minutes(
+    symbol: str,
+    minutes: pd.DataFrame,
+    request: BacktestRequest,
+    allocation: float,
+    position_source: str,
+    symbols_source: str,
+    allowed_entry_dates: set[date] | None = None,
+) -> SymbolBacktest:
+    """策略三回测:三周期 MA + MACD 金叉 + ATR 动态止损。"""
+    from quant.live.ma_atr_intraday import MaAtrPosition, evaluate_ma_atr_entry_signal, evaluate_ma_atr_exit_signal
+
+    params = request.params_snapshot
+    slow_k_minutes = _int_param(params, "slow_k_minutes", 60)
+    mid_k_minutes = _int_param(params, "mid_k_minutes", 10)
+    fast_k_minutes = _int_param(params, "fast_k_minutes", 5)
+    slow_fast_ema = _int_param(params, "slow_fast_ema", 3)
+    slow_slow_ema = _int_param(params, "slow_slow_ema", 8)
+    mid_fast_ema = _int_param(params, "mid_fast_ema", 11)
+    mid_slow_ema = _int_param(params, "mid_slow_ema", 30)
+    fast_fast_ema = _int_param(params, "fast_fast_ema", 3)
+    fast_slow_ema = _int_param(params, "fast_slow_ema", 8)
+    macd_fast = _int_param(params, "macd_fast", 12)
+    macd_slow = _int_param(params, "macd_slow", 26)
+    macd_signal = _int_param(params, "macd_signal", 9)
+    atr_period = _int_param(params, "atr_period", 5)
+    atr_multiplier = _float_param(params, "atr_multiplier", 1.2)
+    open_after_minutes = _int_param(params, "open_after_minutes", 30)
+    close_before_minutes = _int_param(params, "close_before_minutes", 90)
+    stop_loss_pct = _float_param(params, "stop_loss_pct", 1.5)
+    take_profit_pct = _float_param(params, "take_profit_pct", 3.0)
+    trailing_enabled = params.get("trailing_enabled", True) if params else True
+    trailing_start_pct = _float_param(params, "trailing_start_pct", 2.0)
+    trailing_stop_pct = _float_param(params, "trailing_stop_pct", 1.0)
+
+    bars = minutes.sort_index()
+    aggregator = BarAggregator()
+    returns: list[float] = []
+    trade_returns: list[float] = []
+    trade_rows: list[BacktestTradeRow] = []
+    holding = False
+    side = "long"
+    entry_price = 0.0
+    entry_time = ""
+    entry_reason = ""
+    quantity = 0.0
+    highest_price = 0.0
+    lowest_price = 0.0
+    max_favorable_pct = 0.0
+    max_adverse_pct = 0.0
+    highest_since_entry = 0.0
+
+    for bar_time, row in bars.iterrows():
+        at = _as_datetime(bar_time)
+        open_price = float(row["open"])
+        close = float(row["close"])
+        high = float(row["high"])
+        low = float(row["low"])
+        returns.append(0.0)
+        exit_price: float | None = None
+        exit_reason = ""
+
+        if holding:
+            highest_price = max(highest_price, high)
+            highest_since_entry = max(highest_since_entry, high)
+            lowest_price = min(lowest_price, low)
+            max_favorable_pct, max_adverse_pct = _intraday_excursions(
+                side, entry_price, highest_price, lowest_price,
+            )
+            if _is_intraday_force_close_time(at, request.market):
+                exit_price = close
+                exit_reason = "尾盘强制平仓"
+            elif is_market_open(at, request.market) and is_bar_close(at, fast_k_minutes, request.market):
+                closes_slow, closes_mid, closes_fast = _three_period_closes(
+                    aggregator, symbol,
+                    slow_k_minutes=slow_k_minutes,
+                    mid_k_minutes=mid_k_minutes,
+                    fast_k_minutes=fast_k_minutes,
+                )
+                highs_fast = [bar.high for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
+                lows_fast = [bar.low for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
+                action, reasons = evaluate_ma_atr_exit_signal(
+                    MaAtrPosition(symbol=symbol, side=side, quantity=max(1, int(quantity)),
+                                  avg_price=entry_price, highest_since_entry=highest_since_entry),
+                    closes_slow, closes_mid, closes_fast, highs_fast, lows_fast,
+                    fast_fast_ema=fast_fast_ema, fast_slow_ema=fast_slow_ema,
+                    mid_fast_ema=mid_fast_ema, mid_slow_ema=mid_slow_ema,
+                    macd_fast=macd_fast, macd_slow=macd_slow, macd_signal=macd_signal,
+                    atr_period=atr_period, atr_multiplier=atr_multiplier,
+                    stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+                    trailing_enabled=trailing_enabled,
+                    trailing_start_pct=trailing_start_pct, trailing_stop_pct=trailing_stop_pct,
+                )
+                if action.startswith("exit"):
+                    exit_price = open_price
+                    exit_reason = reasons[0] if reasons else "策略三平仓"
+
+            if exit_price is not None:
+                trade_return = _intraday_trade_return(side, entry_price, exit_price)
+                returns[-1] = trade_return
+                trade_returns.append(trade_return)
+                trade_rows.append(
+                    _build_trade_row(
+                        symbol=symbol, market=request.market, side=side,
+                        entry_time=entry_time, exit_time=_format_time(bar_time),
+                        entry_price=entry_price, exit_price=exit_price,
+                        position_size=allocation, quantity=quantity,
+                        symbols_source=symbols_source, position_source=position_source,
+                        entry_reason=entry_reason, exit_reason=exit_reason,
+                        max_favorable_pct=max_favorable_pct, max_adverse_pct=max_adverse_pct,
+                    )
+                )
+                holding = False
+                side = "long"
+                entry_price = 0.0
+                entry_time = ""
+                quantity = 0.0
+                highest_price = 0.0
+                lowest_price = 0.0
+                highest_since_entry = 0.0
+                max_favorable_pct = 0.0
+                max_adverse_pct = 0.0
+
+        if not holding:
+            if (
+                (allowed_entry_dates is None or at.date() in allowed_entry_dates)
+                and is_market_open(at, request.market)
+                and is_bar_close(at, fast_k_minutes, request.market)
+            ):
+                closes_slow, closes_mid, closes_fast = _three_period_closes(
+                    aggregator, symbol,
+                    slow_k_minutes=slow_k_minutes,
+                    mid_k_minutes=mid_k_minutes,
+                    fast_k_minutes=fast_k_minutes,
+                )
+                highs_fast = [bar.high for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
+                lows_fast = [bar.low for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
+                if min(len(closes_slow), len(closes_mid), len(closes_fast)) >= slow_ema + 1:
+                    signal = evaluate_ma_atr_entry_signal(
+                        symbol=symbol, market=request.market, at=at,
+                        closes_slow=closes_slow, closes_mid=closes_mid, closes_fast=closes_fast,
+                        highs_fast=highs_fast, lows_fast=lows_fast,
+                        slow_fast_ema=slow_fast_ema, slow_slow_ema=slow_slow_ema,
+                        mid_fast_ema=mid_fast_ema, mid_slow_ema=mid_slow_ema,
+                        fast_fast_ema=fast_fast_ema, fast_slow_ema=fast_slow_ema,
+                        macd_fast=macd_fast, macd_slow=macd_slow, macd_signal=macd_signal,
+                        atr_period=atr_period, atr_multiplier=atr_multiplier,
+                        open_after_minutes=open_after_minutes,
+                        close_before_minutes=close_before_minutes,
+                    )
+                    if signal.action in {"enter_long", "enter_short"} and open_price > 0:
+                        side = "long" if signal.action == "enter_long" else "short"
+                        entry_price = open_price
+                        entry_time = _format_time(bar_time)
+                        entry_reason = f"MA+MACD+ATR 三周期{'开多' if side == 'long' else '开空'}：{slow_k_minutes}/{mid_k_minutes}/{fast_k_minutes}分钟"
+                        quantity = _quantity_for(allocation, entry_price)
+                        highest_price = max(entry_price, high)
+                        lowest_price = min(entry_price, low)
+                        highest_since_entry = high
+                        max_favorable_pct, max_adverse_pct = _intraday_excursions(
+                            side, entry_price, highest_price, lowest_price,
+                        )
+                        holding = True
+
+        aggregator.seed_minute_bars(
+            symbol,
+            [Bar(symbol=symbol, start=at, open=open_price, high=high, low=low, close=close, volume=float(row["volume"]))],
+        )
+
+    if holding:
+        row = bars.iloc[-1]
+        exit_price = float(row["close"])
+        trade_return = _intraday_trade_return(side, entry_price, exit_price)
+        returns[-1] = trade_return
+        trade_returns.append(trade_return)
+        trade_rows.append(
+            _build_trade_row(
+                symbol=symbol, market=request.market, side=side,
+                entry_time=entry_time, exit_time=_format_time(bars.index[-1]),
+                entry_price=entry_price, exit_price=exit_price,
+                position_size=allocation, quantity=quantity,
+                symbols_source=symbols_source, position_source=position_source,
+                entry_reason=entry_reason, exit_reason="回测结束强平",
+                max_favorable_pct=max_favorable_pct, max_adverse_pct=max_adverse_pct,
+            )
+        )
+
+    return SymbolBacktest(
+        symbol=symbol,
+        returns=pd.Series(returns, index=bars.index, dtype=float),
+        trade_returns=tuple(trade_returns),
+        trade_rows=tuple(trade_rows),
+    )
 
 
 def _three_period_closes(
@@ -1135,7 +1356,7 @@ def _int_param(params: dict[str, object], key: str, default: int) -> int:
 
 def _position_size(request: BacktestRequest, symbol_count: int) -> tuple[float, str]:
     params = request.params_snapshot
-    if request.strategy_id == "intraday_macd":
+    if request.strategy_id in {"intraday_macd", "ma_atr_intraday"}:
         fraction = params.get("position_fraction_pct")
         if isinstance(fraction, (int, float)) and fraction > 0:
             return request.initial_capital * float(fraction) / 100, f"策略参数 position_fraction_pct={fraction}%"
@@ -1289,6 +1510,8 @@ def _empty_result(request: BacktestRequest, notes: list[str]) -> BacktestResult:
 def _strategy_notes(strategy_id: str, used_symbols: int, requested_symbols: list[str]) -> list[str]:
     if strategy_id == "intraday_macd":
         mode = "日内 MACD 分钟回测；使用真实1分钟线重建15/5/3分钟柱体，并复用实盘多空与退出逻辑。"
+    elif strategy_id == "ma_atr_intraday":
+        mode = "多周期 MA+MACD+ATR 日内回测；使用真实1分钟线重建1h/10m/5m周期，三周期 MA 趋势共振 + MACD 金叉确认 + ATR 动态止损。"
     else:
         mode = "日线趋势代理回测；月/周线组合调仓 vnpy 回测仍待接入。"
     return [
