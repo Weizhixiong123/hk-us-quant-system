@@ -101,17 +101,24 @@ const {
 const activeView = ref<ViewName>("dashboard");
 const selectedStrategyId = ref<string | null>(null);
 
-// 策略切换提示 —— 点击策略卡时短暂弹出
-const strategyToast = ref<{ id: string; name: string } | null>(null);
-let strategyToastTimer: number | undefined;
+// 策略切换确认 —— 点击策略卡先弹确认框，点确定才真正切换；取消回退
+const pendingStrategy = ref<{ id: string; name: string } | null>(null);
+const previousStrategyId = ref<string | null>(null);
+
 function selectStrategy(strategy: { id: string; name: string }) {
-  if (selectedStrategyId.value === strategy.id) return;
-  selectedStrategyId.value = strategy.id;
-  strategyToast.value = { id: strategy.id, name: strategy.name };
-  if (strategyToastTimer) window.clearTimeout(strategyToastTimer);
-  strategyToastTimer = window.setTimeout(() => {
-    strategyToast.value = null;
-  }, 2200);
+  if (selectedStrategyId.value === strategy.id || pendingStrategy.value) return;
+  previousStrategyId.value = selectedStrategyId.value;
+  pendingStrategy.value = { id: strategy.id, name: strategy.name };
+}
+
+function confirmStrategySwitch() {
+  if (!pendingStrategy.value) return;
+  selectedStrategyId.value = pendingStrategy.value.id;
+  pendingStrategy.value = null;
+}
+
+function cancelStrategySwitch() {
+  pendingStrategy.value = null;
 }
 
 const tradeHistory = ref<Trade[]>([]);
@@ -1310,10 +1317,21 @@ function logTime(value: string): string {
       </span>
     </footer>
 
-    <!-- 策略切换提示 -->
+    <!-- 策略切换确认对话框 -->
     <Transition name="fade">
-      <div v-if="strategyToast" class="strategy-toast" :key="strategyToast.id">
-        <span>{{ strategyToast.name }}</span>
+      <div v-if="pendingStrategy" class="strategy-confirm-mask" @click.self="cancelStrategySwitch">
+        <div class="strategy-confirm-dialog" :key="pendingStrategy.id">
+          <strong class="strategy-confirm-title">切换策略</strong>
+          <p class="strategy-confirm-desc">
+            确定要切换到
+            <em>「{{ pendingStrategy.name }}」</em>
+            吗？当前策略的状态会保留。
+          </p>
+          <div class="strategy-confirm-actions">
+            <button class="text-button" type="button" @click="cancelStrategySwitch">取消</button>
+            <button class="text-button primary" type="button" @click="confirmStrategySwitch">确定</button>
+          </div>
+        </div>
       </div>
     </Transition>
   </main>
