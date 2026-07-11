@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.store import list_live_events
@@ -71,6 +71,17 @@ def test_daily_loss_pct_without_baseline_is_zero():
     from quant.live.runtime_state import StrategyRuntimeState
 
     assert StrategyRuntimeState().daily_loss_pct(900.0) == 0.0
+
+
+def test_market_accounts_keep_independent_daily_baselines():
+    state = StrategyRuntimeState()
+    day = date(2026, 7, 11)
+
+    state.observe_account_equity(1_000_000, day, "HK")
+    state.observe_account_equity(500_000, day, "US")
+
+    assert state.daily_loss_pct(990_000, "HK") == -1.0
+    assert state.daily_loss_pct(505_000, "US") == 1.0
 
 
 def test_trip_halt_latches_until_day_reset():

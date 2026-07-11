@@ -10,12 +10,19 @@ import {
   PieChart,
   RefreshCw,
   ShieldCheck,
-  WalletCards
+  WalletCards,
+  X
 } from "lucide-vue-next";
-import { closeUnassignedPositions } from "../api/client";
-import type { AccountSummary, Order, Position, StrategyConfig } from "../api/types";
+import { closeUnassignedPositions, updatePositionRiskSetting } from "../api/client";
+import type {
+  AccountSummary,
+  Order,
+  Position,
+  PositionRiskSetting,
+  StrategyConfig
+} from "../api/types";
 
-type PositionFilter = "all" | "intraday" | "trend" | "unassigned";
+type PositionFilter = "all" | "intraday" | "trend" | "maAtr" | "unassigned";
 type PositionRisk = "pass" | "watch" | "triggered" | "closing" | "manual";
 
 interface AttemptRecord {
@@ -58,6 +65,13 @@ const emit = defineEmits<{
 const activeFilter = ref<PositionFilter>("all");
 const closePending = ref(false);
 const closeMessage = ref("");
+const selectedPosition = ref<PositionRow | null>(null);
+const stopLossPct = ref(2);
+const takeProfitR = ref(2.5);
+const immediateEffect = ref(true);
+const riskSavePending = ref(false);
+const riskSaveError = ref("");
+const confirmRiskSave = ref(false);
 
 // 记录已尝试过平仓的标的,避免用户反复点按钮导致后端反复向下单系统发"持仓不足"的废单。
 // 用 sessionStorage 让页面刷新后仍记得"这一批已经试过了"。
@@ -140,6 +154,9 @@ const filteredRows = computed(() => {
   if (activeFilter.value === "trend") {
     return positionRows.value.filter((position) => position.strategy_id === "trend_portfolio");
   }
+  if (activeFilter.value === "maAtr") {
+    return positionRows.value.filter((position) => position.strategy_id === "ma_atr_intraday");
+  }
   if (activeFilter.value === "unassigned") {
     return positionRows.value.filter((position) => !isKnownStrategy(position.strategy_id));
   }
@@ -157,6 +174,11 @@ const filterTabs = computed(() => [
     key: "trend" as const,
     label: "策略二 · 中长线",
     count: props.positions.filter((position) => position.strategy_id === "trend_portfolio").length
+  },
+  {
+    key: "maAtr" as const,
+    label: "策略三 · MA+MACD+ATR",
+    count: props.positions.filter((position) => position.strategy_id === "ma_atr_intraday").length
   },
   {
     key: "unassigned" as const,
@@ -188,10 +210,115 @@ const unassignedRemainingCount = computed(
       .length
 );
 
+const stopPrice = computed(() =>
+  selectedPosition.value
+    ? riskPrice(selectedPosition.value, stopLossPct.value, false)
+    : 0
+);
+
+const takeProfitPrice = computed(() =>
+  selectedPosition.value
+    ? riskPrice(selectedPosition.value, stopLossPct.value * takeProfitR.value, true)
+    : 0
+);
+
+const riskDistance = computed(() =>
+  selectedPosition.value ? selectedPosition.value.avg_price * (stopLossPct.value / 100) : 0
+);
+
+const targetDistance = computed(() => riskDistance.value * takeProfitR.value);
+
+const newRiskAlreadyTriggered = computed(() => {
+  const position = selectedPosition.value;
+  if (!position || !immediateEffect.value) return false;
+  return position.side === "long"
+    ? position.last_price <= stopPrice.value || position.last_price >= takeProfitPrice.value
+    : position.last_price >= stopPrice.value || position.last_price <= takeProfitPrice.value;
+});
+
 function strategyParam(strategyId: string, key: string, fallback: number): number {
   const strategy = props.strategies.find((item) => item.id === strategyId);
   const value = strategy?.params[key];
   return typeof value === "number" ? value : fallback;
+}
+
+function defaultRiskSetting(position: Position): { stopLossPct: number; takeProfitR: number } {
+  if (position.strategy_id === "ma_atr_intraday") {
+    const stop = strategyParam("ma_atr_intraday", "stop_loss_pct", 1.5);
+    return {
+      stopLossPct: stop,
+      takeProfitR: strategyParam("ma_atr_intraday", "take_profit_pct", 3) / stop
+    };
+  }
+  if (position.strategy_id === "trend_portfolio") {
+    const stop = strategyParam("trend_portfolio", "max_symbol_drawdown_pct", 18);
+    return {
+      stopLossPct: stop,
+      takeProfitR: strategyParam("trend_portfolio", "take_profit_pct", 20) / stop
+    };
+  }
+  const stop = strategyParam("intraday_macd", "stop_loss_pct", 1.5);
+  return {
+    stopLossPct: stop,
+    takeProfitR: strategyParam("intraday_macd", "take_profit_1_pct", 2) / stop
+  };
+}
+
+function riskPrice(position: Position, distancePct: number, profit: boolean): number {
+  const direction = position.side === "long" ? 1 : -1;
+  const signedDirection = profit ? direction : -direction;
+  return position.avg_price * (1 + signedDirection * distancePct / 100);
+}
+
+function settingPrice(position: Position, setting: PositionRiskSetting, profit: boolean): number {
+  const distancePct = profit
+    ? setting.stop_loss_pct * setting.take_profit_r
+    : setting.stop_loss_pct;
+  return riskPrice(position, distancePct, profit);
+}
+
+function openRiskSetting(position: PositionRow): void {
+  if (position.risk === "closing") return;
+  const defaults = defaultRiskSetting(position);
+  selectedPosition.value = position;
+  stopLossPct.value = position.risk_setting?.stop_loss_pct ?? defaults.stopLossPct;
+  takeProfitR.value = position.risk_setting?.take_profit_r ?? defaults.takeProfitR;
+  immediateEffect.value = position.risk_setting?.active ?? true;
+  riskSaveError.value = "";
+}
+
+function closeRiskSetting(): void {
+  if (riskSavePending.value) return;
+  selectedPosition.value = null;
+  confirmRiskSave.value = false;
+  riskSaveError.value = "";
+}
+
+function requestRiskSave(): void {
+  if (!selectedPosition.value || stopLossPct.value <= 0 || takeProfitR.value <= 0) return;
+  confirmRiskSave.value = true;
+}
+
+async function saveRiskSetting(): Promise<void> {
+  const position = selectedPosition.value;
+  if (!position || riskSavePending.value) return;
+  riskSavePending.value = true;
+  riskSaveError.value = "";
+  try {
+    await updatePositionRiskSetting(position.market, position.symbol, {
+      stop_loss_pct: Number(stopLossPct.value),
+      take_profit_r: Number(takeProfitR.value),
+      active: immediateEffect.value
+    });
+    confirmRiskSave.value = false;
+    selectedPosition.value = null;
+    emit("refresh");
+  } catch (err) {
+    confirmRiskSave.value = false;
+    riskSaveError.value = err instanceof Error ? err.message : "持仓风控保存失败";
+  } finally {
+    riskSavePending.value = false;
+  }
 }
 
 function positionWeight(position: Position): number {
@@ -200,7 +327,7 @@ function positionWeight(position: Position): number {
 }
 
 function isKnownStrategy(strategyId: string): boolean {
-  return strategyId === "intraday_macd" || strategyId === "trend_portfolio";
+  return ["intraday_macd", "trend_portfolio", "ma_atr_intraday"].includes(strategyId);
 }
 
 function attemptStatusOf(attempt: AttemptRecord): AttemptStatus {
@@ -221,9 +348,14 @@ function positionRisk(position: Position): { risk: PositionRisk; detail: string 
   const positionCap = intraday
     ? strategyParam("intraday_macd", "position_fraction_pct", 10)
     : strategyParam("trend_portfolio", "single_position_cap_pct", 15);
-  const lossLimit = intraday
+  const strategyLossLimit = intraday
     ? strategyParam("intraday_macd", "stop_loss_pct", 1.5)
-    : strategyParam("trend_portfolio", "max_symbol_drawdown_pct", 18);
+    : position.strategy_id === "ma_atr_intraday"
+      ? strategyParam("ma_atr_intraday", "stop_loss_pct", 1.5)
+      : strategyParam("trend_portfolio", "max_symbol_drawdown_pct", 18);
+  const lossLimit = position.risk_setting?.active
+    ? position.risk_setting.stop_loss_pct
+    : strategyLossLimit;
 
   const triggers = riskTriggers(position, weight, positionCap, lossLimit, intraday);
   if (triggers.length > 0) {
@@ -283,6 +415,9 @@ function strategyLabel(strategyId: string): string {
   if (strategyId === "trend_portfolio") {
     return "策略二";
   }
+  if (strategyId === "ma_atr_intraday") {
+    return "策略三";
+  }
   return "未归属";
 }
 
@@ -292,6 +427,9 @@ function strategyDetail(strategyId: string): string {
   }
   if (strategyId === "trend_portfolio") {
     return "中长线持仓";
+  }
+  if (strategyId === "ma_atr_intraday") {
+    return "多周期 MA + MACD + ATR";
   }
   return "券商同步 · 未恢复策略来源";
 }
@@ -366,6 +504,10 @@ function money(value: number, digits = 0): string {
 function pct(value: number): string {
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(2)}%`;
+}
+
+function oneDecimal(value: number): string {
+  return Number(value || 0).toFixed(1);
 }
 
 function tone(value: number): "gain" | "loss" | "" {
@@ -464,10 +606,15 @@ function tone(value: number): "gain" | "loss" | "" {
                 <th>浮动盈亏</th>
                 <th>持仓</th>
                 <th>状态</th>
+                <th>风控设置</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="position in filteredRows" :key="position.symbol">
+              <tr
+                v-for="position in filteredRows"
+                :key="position.symbol"
+                :class="{ selected: selectedPosition?.symbol === position.symbol }"
+              >
                 <td>
                   <div class="position-symbol-cell">
                     <strong>{{ position.symbol }}</strong>
@@ -499,9 +646,33 @@ function tone(value: number): "gain" | "loss" | "" {
                     {{ position.riskLabel }}
                   </span>
                 </td>
+                <td>
+                  <div class="position-risk-setting-cell">
+                    <button
+                      class="position-risk-setting-button"
+                      type="button"
+                      :disabled="position.risk === 'closing'"
+                      :title="position.risk === 'closing' ? '已有平仓委托，不能重复设置风控' : ''"
+                      @click="openRiskSetting(position)"
+                    >
+                      {{ position.risk === "closing" ? "平仓处理中" : position.risk_setting ? "修改风控" : "止盈止损设置" }}
+                    </button>
+                    <template v-if="position.risk_setting">
+                      <small>
+                        止损 {{ position.risk_setting.stop_loss_pct.toFixed(1) }}% ·
+                        {{ money(settingPrice(position, position.risk_setting, false), 2) }}
+                      </small>
+                      <small>
+                        止盈 {{ position.risk_setting.take_profit_r.toFixed(1) }}R ·
+                        {{ money(settingPrice(position, position.risk_setting, true), 2) }}
+                      </small>
+                    </template>
+                    <small v-else>使用策略默认</small>
+                  </div>
+                </td>
               </tr>
               <tr v-if="filteredRows.length === 0">
-                <td colspan="10" class="position-empty">
+                <td colspan="11" class="position-empty">
                   <BriefcaseBusiness :size="25" />
                   <strong>当前筛选下暂无持仓</strong>
                   <span>策略成交后，券商持仓会自动同步到这里。</span>
@@ -538,5 +709,105 @@ function tone(value: number): "gain" | "loss" | "" {
         </section>
       </aside>
     </div>
+
+    <Teleport to="body">
+      <Transition name="position-drawer">
+        <div v-if="selectedPosition" class="position-risk-drawer-mask" @click.self="closeRiskSetting">
+          <aside class="position-risk-drawer" aria-label="止盈止损设置">
+            <header class="position-risk-drawer-head">
+              <h2>止盈止损设置</h2>
+              <button type="button" aria-label="关闭" @click="closeRiskSetting"><X :size="20" /></button>
+            </header>
+
+            <div class="position-risk-drawer-body">
+              <section class="risk-position-identity">
+                <div>
+                  <strong>{{ selectedPosition.symbol }}</strong>
+                  <span :class="selectedPosition.side">
+                    {{ selectedPosition.side === "long" ? "多头" : "空头" }}
+                  </span>
+                </div>
+                <p><span>当前持仓平均成本</span><strong>{{ money(selectedPosition.avg_price, 2) }}</strong></p>
+              </section>
+
+              <label class="risk-setting-field">
+                <span>止损比例（%）</span>
+                <input v-model.number="stopLossPct" type="number" min="0.1" max="100" step="0.1" />
+              </label>
+
+              <label class="risk-setting-field">
+                <span>止盈倍数（R）</span>
+                <input v-model.number="takeProfitR" type="number" min="0.1" max="20" step="0.1" />
+              </label>
+
+              <div class="risk-setting-toggle-row">
+                <div><strong>立即生效</strong><small>关闭后保存为暂不执行的持仓设置</small></div>
+                <button
+                  class="risk-setting-toggle"
+                  :class="{ active: immediateEffect }"
+                  type="button"
+                  role="switch"
+                  :aria-checked="immediateEffect"
+                  @click="immediateEffect = !immediateEffect"
+                ><i /></button>
+              </div>
+
+              <section class="risk-price-preview">
+                <header><strong>计算预览</strong><span>基于平均成本计算</span></header>
+                <div>
+                  <p><span>止损价</span><strong class="loss">{{ money(stopPrice, 2) }}</strong></p>
+                  <p><span>止盈价</span><strong class="gain">{{ money(takeProfitPrice, 2) }}</strong></p>
+                  <p><span>风险距离</span><strong>{{ money(riskDistance, 2) }}</strong></p>
+                  <p><span>目标收益</span><strong>{{ money(targetDistance, 2) }}</strong></p>
+                  <p><span>盈亏比</span><strong>1 : {{ oneDecimal(takeProfitR) }}</strong></p>
+                </div>
+                <small>价格基于当前持仓平均成本计算；加仓后将自动重新计算。</small>
+              </section>
+
+              <div class="risk-setting-warning" :class="{ urgent: newRiskAlreadyTriggered }">
+                <CircleAlert :size="17" />
+                <span>当前价格若已触及新止损或止盈条件，保存后可能立即触发平仓。</span>
+              </div>
+              <p v-if="riskSaveError" class="risk-setting-error">{{ riskSaveError }}</p>
+            </div>
+
+            <footer class="position-risk-drawer-actions">
+              <button type="button" @click="closeRiskSetting">取消</button>
+              <button
+                class="primary"
+                type="button"
+                :disabled="stopLossPct <= 0 || takeProfitR <= 0"
+                @click="requestRiskSave"
+              >确认并应用</button>
+            </footer>
+          </aside>
+        </div>
+      </Transition>
+
+      <Transition name="fade">
+        <div v-if="confirmRiskSave && selectedPosition" class="risk-confirm-mask">
+          <section class="risk-confirm-dialog">
+            <div class="risk-confirm-icon"><ShieldCheck :size="23" /></div>
+            <h3>确认应用新的止盈止损？</h3>
+            <p>
+              {{ selectedPosition.symbol }} 将使用止损 {{ oneDecimal(stopLossPct) }}%、
+              止盈 {{ oneDecimal(takeProfitR) }}R。
+              <template v-if="immediateEffect">保存后立即进入自动风控检查。</template>
+              <template v-else>该设置将保存但暂不执行。</template>
+            </p>
+            <div class="risk-confirm-levels">
+              <span>止损价 <strong class="loss">{{ money(stopPrice, 2) }}</strong></span>
+              <span>止盈价 <strong class="gain">{{ money(takeProfitPrice, 2) }}</strong></span>
+            </div>
+            <div class="risk-confirm-actions">
+              <button type="button" :disabled="riskSavePending" @click="confirmRiskSave = false">返回修改</button>
+              <button class="primary" type="button" :disabled="riskSavePending" @click="saveRiskSetting">
+                {{ riskSavePending ? "保存中…" : "确认应用" }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
   </section>
 </template>

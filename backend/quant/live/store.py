@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
 from uuid import uuid4
@@ -127,6 +127,146 @@ def list_live_events(
     return [_event_from_payload(json.loads(row[0])) for row in rows]
 
 
+def load_account_daily_baseline(
+    account_key: str,
+    day: date,
+    db_path: DbPath | None = None,
+) -> float | None:
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return None
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        row = connection.execute(
+            """
+            SELECT equity
+            FROM account_daily_baselines
+            WHERE account_key = ? AND trading_day = ?
+            """,
+            (account_key, day.isoformat()),
+        ).fetchone()
+    return float(row[0]) if row else None
+
+
+def save_account_daily_baseline(
+    account_key: str,
+    day: date,
+    equity: float,
+    db_path: DbPath | None = None,
+) -> float:
+    path = _resolve_db_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO account_daily_baselines (account_key, trading_day, equity)
+            VALUES (?, ?, ?)
+            """,
+            (account_key, day.isoformat(), float(equity)),
+        )
+        row = connection.execute(
+            """
+            SELECT equity
+            FROM account_daily_baselines
+            WHERE account_key = ? AND trading_day = ?
+            """,
+            (account_key, day.isoformat()),
+        ).fetchone()
+    return float(row[0])
+
+
+def save_position_risk_setting(
+    market: str,
+    symbol: str,
+    stop_loss_pct: float,
+    take_profit_r: float,
+    active: bool,
+    db_path: DbPath | None = None,
+) -> dict[str, Any]:
+    path = _resolve_db_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_market = market.strip().upper()
+    normalized_symbol = symbol.strip().upper()
+    updated_at = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        connection.execute(
+            """
+            INSERT INTO position_risk_settings (
+                market, symbol, stop_loss_pct, take_profit_r, active, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(market, symbol) DO UPDATE SET
+                stop_loss_pct = excluded.stop_loss_pct,
+                take_profit_r = excluded.take_profit_r,
+                active = excluded.active,
+                updated_at = excluded.updated_at
+            """,
+            (
+                normalized_market,
+                normalized_symbol,
+                float(stop_loss_pct),
+                float(take_profit_r),
+                int(active),
+                updated_at,
+            ),
+        )
+    return {
+        "market": normalized_market,
+        "symbol": normalized_symbol,
+        "stop_loss_pct": float(stop_loss_pct),
+        "take_profit_r": float(take_profit_r),
+        "active": bool(active),
+        "updated_at": updated_at,
+    }
+
+
+def load_position_risk_setting(
+    market: str,
+    symbol: str,
+    db_path: DbPath | None = None,
+) -> dict[str, Any] | None:
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return None
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        row = connection.execute(
+            """
+            SELECT market, symbol, stop_loss_pct, take_profit_r, active, updated_at
+            FROM position_risk_settings
+            WHERE market = ? AND symbol = ?
+            """,
+            (market.strip().upper(), symbol.strip().upper()),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "market": str(row[0]),
+        "symbol": str(row[1]),
+        "stop_loss_pct": float(row[2]),
+        "take_profit_r": float(row[3]),
+        "active": bool(row[4]),
+        "updated_at": str(row[5]),
+    }
+
+
+def delete_position_risk_setting(
+    market: str,
+    symbol: str,
+    db_path: DbPath | None = None,
+) -> None:
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        connection.execute(
+            "DELETE FROM position_risk_settings WHERE market = ? AND symbol = ?",
+            (market.strip().upper(), symbol.strip().upper()),
+        )
+
+
 def _resolve_db_path(db_path: DbPath | None) -> Path:
     if db_path is not None:
         return Path(db_path)
@@ -162,6 +302,29 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_live_events_kind_created_at
         ON live_events(kind, created_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_daily_baselines (
+            account_key TEXT NOT NULL,
+            trading_day TEXT NOT NULL,
+            equity REAL NOT NULL,
+            PRIMARY KEY (account_key, trading_day)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS position_risk_settings (
+            market TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            stop_loss_pct REAL NOT NULL,
+            take_profit_r REAL NOT NULL,
+            active INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (market, symbol)
+        )
         """
     )
 

@@ -7,6 +7,8 @@ import type {
   LiveSettingsUpdate,
   Market,
   ParamValue,
+  PositionRiskSetting,
+  PositionRiskSettingUpdate,
   RuntimeReloadResult,
   StrategyConfig,
   SymbolNameLookup,
@@ -62,6 +64,20 @@ export function reloadRuntime(): Promise<RuntimeReloadResult> {
 
 export function closeUnassignedPositions(): Promise<CloseUnassignedPositionsResult> {
   return request<CloseUnassignedPositionsResult>("/positions/unassigned/close", { method: "POST" });
+}
+
+export function updatePositionRiskSetting(
+  market: Market,
+  symbol: string,
+  payload: PositionRiskSettingUpdate
+): Promise<PositionRiskSetting> {
+  return request<PositionRiskSetting>(
+    `/positions/${market}/${encodeURIComponent(symbol)}/risk-setting`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }
+  );
 }
 
 export function fetchSymbolName(symbol: string, market: Market): Promise<SymbolNameLookup> {

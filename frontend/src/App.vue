@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch, type Component } from "vue";
 import {
   Activity,
-  Briefcase,
   ChevronRight,
   ChevronsLeft,
   ClipboardList,
@@ -25,7 +24,7 @@ import PositionManagement from "./components/PositionManagement.vue";
 import StrategyCard from "./components/StrategyCard.vue";
 import { fetchTradeHistory } from "./api/client";
 import { useDashboard } from "./composables/useDashboard";
-import type { Market, RiskRuleStatus, Signal, Trade, TradeLog } from "./api/types";
+import type { AccountSummary, Market, RiskRuleStatus, Signal, Trade, TradeLog } from "./api/types";
 
 type ViewName = "dashboard" | "strategies" | "candidates" | "positions" | "trades" | "logs" | "settings";
 type QueryStatus = "triggered" | "selected" | "watching" | "pending" | "closed";
@@ -75,6 +74,8 @@ interface EventRow {
 
 const {
   account,
+  accounts,
+  activateStrategy,
   backtest,
   backtestError,
   backtestProgress,
@@ -111,9 +112,11 @@ function selectStrategy(strategy: { id: string; name: string }) {
   pendingStrategy.value = { id: strategy.id, name: strategy.name };
 }
 
-function confirmStrategySwitch() {
+async function confirmStrategySwitch() {
   if (!pendingStrategy.value) return;
-  selectedStrategyId.value = pendingStrategy.value.id;
+  const strategyId = pendingStrategy.value.id;
+  await activateStrategy(strategyId);
+  selectedStrategyId.value = strategyId;
   pendingStrategy.value = null;
 }
 
@@ -185,14 +188,6 @@ const accountSourceLabel = computed(() => {
   return account.value.source === "dry_run" ? "干跑资金" : "券商账户";
 });
 
-const buyingPowerLabel = computed(() => {
-  if (!account.value) {
-    return "购买力 --";
-  }
-  const label = account.value.source === "dry_run" ? "模拟购买力" : "券商购买力";
-  return `${label} ${money(account.value.buying_power)}`;
-});
-
 const currentModeLabel = computed(() => {
   if (!account.value) {
     return "--";
@@ -205,7 +200,11 @@ const queriedStocks = computed<QueryRow[]>(() =>
     const tags = item.tags;
     const reason = tags.length > 0 ? tags.join(" / ") : "等待信号";
     const source = querySourceFromTags(tags, reason);
-    const strategyTwo = item.strategy_id === "trend_portfolio";
+    const strategy = {
+      intraday_macd: { label: "策略一", detail: "日内 MACD" },
+      trend_portfolio: { label: "策略二", detail: "中长线选股" },
+      ma_atr_intraday: { label: "策略三", detail: "多周期 MA + MACD + ATR" }
+    }[item.strategy_id] ?? { label: "策略一", detail: "日内 MACD" };
     const status = resolveQueryStatus(reason, item.market, item.triggered);
     const bd = item.score_breakdown;
     const fresh = item.freshness ?? 1;
@@ -217,8 +216,8 @@ const queriedStocks = computed<QueryRow[]>(() =>
       symbol: item.symbol,
       name: item.name,
       market: item.market,
-      strategy: strategyTwo ? "策略二" : "策略一",
-      strategyDetail: strategyTwo ? "中长线选股" : "日内 MACD",
+      strategy: strategy.label,
+      strategyDetail: strategy.detail,
       sourceLabel: source.label,
       sourceDetail: source.detail,
       status,
@@ -234,12 +233,13 @@ const queriedStocks = computed<QueryRow[]>(() =>
   })
 );
 
-type QueryTabKey = "all" | "intraday" | "trend" | "triggered" | "watching";
+type QueryTabKey = "all" | "intraday" | "trend" | "maAtr" | "triggered" | "watching";
 
 const queryTabDefs: { key: QueryTabKey; label: string; match: (item: QueryRow) => boolean }[] = [
   { key: "all", label: "全部", match: () => true },
   { key: "intraday", label: "策略一 · 日内 MACD", match: (item) => item.strategy === "策略一" },
   { key: "trend", label: "策略二 · 中长线选股", match: (item) => item.strategy === "策略二" },
+  { key: "maAtr", label: "策略三 · MA + MACD + ATR", match: (item) => item.strategy === "策略三" },
   { key: "watching", label: "观察中", match: (item) => item.status === "watching" },
   { key: "triggered", label: "信号触发", match: (item) => item.status === "triggered" }
 ];
@@ -366,12 +366,23 @@ watch(
   { immediate: true }
 );
 
-const maxDailyLossUsed = computed(() => {
-  if (!account.value || account.value.max_daily_loss_pct <= 0) {
+const displayedAccounts = computed(() =>
+  accounts.value.length > 0 ? accounts.value : account.value ? [account.value] : []
+);
+
+function accountLabel(item: AccountSummary): string {
+  if (item.source === "dry_run") return "干跑账户";
+  if (item.market === "HK") return "港股模拟账户";
+  if (item.market === "US") return "美股模拟账户";
+  return "券商账户";
+}
+
+function dailyLossUsed(item: AccountSummary): number {
+  if (item.max_daily_loss_pct <= 0 || item.day_pnl_pct >= 0) {
     return 0;
   }
-  return Math.min(100, (Math.abs(account.value.day_pnl_pct) / account.value.max_daily_loss_pct) * 100);
-});
+  return Math.min(100, (-item.day_pnl_pct / item.max_daily_loss_pct) * 100);
+}
 
 function switchView(view?: ViewName): void {
   if (view) {
@@ -701,39 +712,33 @@ function logTime(value: string): string {
 
       <section class="ops-content">
         <template v-if="activeView === 'dashboard'">
-          <section v-if="account" class="ops-metric-grid">
-            <article class="metric-card">
-              <div class="metric-icon">
-                <WalletCards :size="26" />
+          <section v-if="account" class="ops-account-overview" :class="{ single: displayedAccounts.length === 1 }">
+            <article v-for="item in displayedAccounts" :key="item.market ?? item.account_id" class="account-summary-card">
+              <header>
+                <div class="metric-icon">
+                  <WalletCards :size="24" />
+                </div>
+                <div>
+                  <strong>{{ accountLabel(item) }}</strong>
+                  <small>{{ item.account_id ? `账户 ${item.account_id}` : accountSourceLabel }}</small>
+                </div>
+                <span class="account-currency">{{ item.currency }}</span>
+              </header>
+              <div class="account-metric-row">
+                <div>
+                  <span>总权益</span>
+                  <strong>{{ money(item.total_equity) }}</strong>
+                </div>
+                <div>
+                  <span>可用现金</span>
+                  <strong>{{ money(item.cash) }}</strong>
+                </div>
+                <div>
+                  <span>当日盈亏</span>
+                  <strong :class="toneClass(item.day_pnl)">{{ money(item.day_pnl) }}</strong>
+                  <small :class="toneClass(item.day_pnl)">{{ pct(item.day_pnl_pct) }}</small>
+                </div>
               </div>
-              <div>
-                <span>总权益</span>
-                <strong>{{ money(account.total_equity) }}</strong>
-                <small>{{ account.currency }}</small>
-              </div>
-              <p>{{ accountSourceLabel }}</p>
-            </article>
-            <article class="metric-card">
-              <div class="metric-icon">
-                <Briefcase :size="26" />
-              </div>
-              <div>
-                <span>可用现金</span>
-                <strong>{{ money(account.cash) }}</strong>
-                <small>{{ account.currency }}</small>
-              </div>
-              <p>{{ buyingPowerLabel }}</p>
-            </article>
-            <article class="metric-card">
-              <div class="metric-icon">
-                <Activity :size="26" />
-              </div>
-              <div>
-                <span>当日盈亏</span>
-                <strong :class="toneClass(account.day_pnl)">{{ money(account.day_pnl) }}</strong>
-                <small :class="toneClass(account.day_pnl)">{{ pct(account.day_pnl_pct) }}</small>
-              </div>
-              <p>{{ currentModeLabel }} 模式</p>
             </article>
             <article class="metric-card">
               <div class="metric-icon danger">
@@ -959,15 +964,15 @@ function logTime(value: string): string {
                   </article>
                 </div>
 
-                <div class="risk-meter">
+                <div v-for="item in displayedAccounts" :key="`risk-${item.market ?? item.account_id}`" class="risk-meter">
                   <div>
-                    <span>单日亏损阈值</span>
-                    <strong>{{ account?.max_daily_loss_pct.toFixed(1) ?? "--" }}%</strong>
+                    <span>{{ accountLabel(item) }}日亏损</span>
+                    <strong>{{ item.max_daily_loss_pct.toFixed(1) }}%</strong>
                   </div>
                   <span class="meter-track danger">
-                    <i :style="{ width: `${maxDailyLossUsed}%` }" />
+                    <i :style="{ width: `${dailyLossUsed(item)}%` }" />
                   </span>
-                  <small>已用 {{ Math.min(maxDailyLossUsed, 100).toFixed(1) }}%</small>
+                  <small>已用 {{ dailyLossUsed(item).toFixed(1) }}%</small>
                 </div>
 
                 <button class="rail-link" type="button">
@@ -1336,3 +1341,156 @@ function logTime(value: string): string {
     </Transition>
   </main>
 </template>
+
+<style scoped>
+/* ===== 候选池表格重新设计 ===== */
+
+/* --- 表头 --- */
+.query-table thead th {
+  padding: 10px 12px;
+  background: rgba(247, 248, 245, 0.95);
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* --- 表体行 --- */
+.query-table tbody td {
+  padding: 10px 12px;
+  font-size: 13px;
+  border-color: rgba(24, 32, 31, 0.06);
+}
+
+.query-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* --- 股票代码 --- */
+.query-symbol strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* --- 来源(策略标识) --- */
+.strategy-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.strategy-label + small {
+  display: block;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+/* --- 状态标识:色点 + 胶囊 --- */
+.query-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.query-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.status-triggered {
+  color: #16805d;
+  background: rgba(22, 128, 93, 0.08);
+}
+.status-triggered::before { background: #16805d; }
+
+.status-watching {
+  color: #d56a17;
+  background: rgba(213, 106, 23, 0.08);
+}
+.status-watching::before { background: #d56a17; }
+
+.status-closed {
+  color: var(--muted);
+  background: rgba(101, 112, 110, 0.08);
+}
+.status-closed::before { background: var(--muted); }
+
+/* --- 评分单元格 --- */
+.score-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 80px;
+}
+
+.score-cell strong {
+  min-width: 24px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.score-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(24, 32, 31, 0.08);
+}
+
+.score-track i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* --- 信号原因单元格 --- */
+.reason-cell {
+  max-width: 280px;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+/* --- 市场标识 --- */
+.market-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.market-pill.hk {
+  color: #0d6f65;
+  background: rgba(13, 111, 101, 0.08);
+}
+
+.market-pill.us {
+  color: #1d4d7c;
+  background: rgba(29, 77, 124, 0.08);
+}
+
+/* --- 空行 --- */
+.empty-row {
+  padding: 28px 12px !important;
+  text-align: center;
+  color: var(--faint);
+  font-size: 13px;
+}
+</style>

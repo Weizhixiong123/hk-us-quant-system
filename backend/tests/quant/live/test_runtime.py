@@ -608,6 +608,77 @@ def test_dry_run_gateway_simulates_cash_account():
     assert account.balance == 1_002_000.0
 
 
+def test_position_risk_setting_triggers_full_stop_loss_exit(tmp_path):
+    from quant.live.store import load_position_risk_setting, save_position_risk_setting
+
+    runtime, gateway = _runtime(tmp_path)
+    gateway.send_order("AAPL", "多", "开", price=100.0, volume=100)
+    save_position_risk_setting("US", "AAPL", 2.0, 2.5, True, runtime.db_path)
+
+    class FallingMarketData(FakeMarketData):
+        def latest_price(self, symbol):
+            return 97.0
+
+    runtime.market_data = FallingMarketData()
+    runtime._check_position_risk_settings(
+        runtime.live_state.snapshot(),
+        datetime(2026, 7, 11, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert runtime.live_state.snapshot()["positions"] == []
+    assert "US:AAPL" in runtime._position_risk_exit_pending
+    runtime._check_position_risk_settings(
+        runtime.live_state.snapshot(),
+        datetime(2026, 7, 11, 14, 1, tzinfo=timezone.utc),
+    )
+    assert load_position_risk_setting("US", "AAPL", runtime.db_path) is None
+
+
+def test_inactive_position_risk_setting_does_not_exit(tmp_path):
+    from quant.live.store import save_position_risk_setting
+
+    runtime, gateway = _runtime(tmp_path)
+    gateway.send_order("AAPL", "多", "开", price=100.0, volume=100)
+    save_position_risk_setting("US", "AAPL", 2.0, 2.5, False, runtime.db_path)
+
+    class FallingMarketData(FakeMarketData):
+        def latest_price(self, symbol):
+            return 97.0
+
+    runtime.market_data = FallingMarketData()
+    runtime._check_position_risk_settings(
+        runtime.live_state.snapshot(),
+        datetime(2026, 7, 11, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(runtime.live_state.snapshot()["positions"]) == 1
+
+
+def test_position_risk_setting_does_not_duplicate_pending_close_order(tmp_path):
+    from quant.live.store import save_position_risk_setting
+    from quant.live.translate import GatewayOrder
+
+    runtime, gateway = _runtime(tmp_path)
+    gateway.send_order("AAPL", "多", "开", price=100.0, volume=100)
+    save_position_risk_setting("US", "AAPL", 2.0, 2.5, True, runtime.db_path)
+    runtime.live_state.update_order(
+        GatewayOrder("CLOSE-1", "AAPL", "空", "平", 99.0, 100, 0, "已提交")
+    )
+
+    class FallingMarketData(FakeMarketData):
+        def latest_price(self, symbol):
+            return 97.0
+
+    runtime.market_data = FallingMarketData()
+    runtime._check_position_risk_settings(
+        runtime.live_state.snapshot(),
+        datetime(2026, 7, 11, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(runtime.live_state.snapshot()["positions"]) == 1
+    assert "US:AAPL" not in runtime._position_risk_exit_pending
+
+
 def test_run_once_runs_off_event_loop_thread(tmp_path):
     """run_once 是同步阻塞函数,必须在工作线程跑,否则会卡住整个 asyncio event loop。"""
     import asyncio
@@ -650,3 +721,51 @@ def test_observe_account_writes_day_pnl(tmp_path):
     live_state.update_account(GatewayAccount("ACC1", 103_000, 50_000, 53_000))
     runtime._observe_account(live_state.snapshot(), at)
     assert live_state.snapshot()["account"].day_pnl == 3_000
+
+
+def test_observe_account_calculates_hk_and_us_pnl_independently(tmp_path):
+    from quant.live.translate import GatewayAccount
+
+    runtime, _gateway = _runtime(tmp_path)
+    live_state = runtime.live_state
+    at = datetime(2026, 7, 11, 10, 0, tzinfo=timezone.utc)
+
+    live_state.update_account(
+        GatewayAccount("HK-ACC", 1_000_000, 800_000, 200_000, market="HK", currency="HKD")
+    )
+    live_state.update_account(
+        GatewayAccount("US-ACC", 500_000, 400_000, 100_000, market="US", currency="USD")
+    )
+    runtime._observe_account(live_state.snapshot(), at)
+
+    live_state.update_account(
+        GatewayAccount("HK-ACC", 990_000, 790_000, 200_000, market="HK", currency="HKD")
+    )
+    live_state.update_account(
+        GatewayAccount("US-ACC", 505_000, 405_000, 100_000, market="US", currency="USD")
+    )
+    runtime._observe_account(live_state.snapshot(), at)
+
+    accounts = {item.market: item for item in live_state.snapshot()["accounts"]}
+    assert accounts["HK"].day_pnl == -10_000
+    assert accounts["US"].day_pnl == 5_000
+
+
+def test_account_daily_baseline_survives_runtime_restart(tmp_path):
+    from quant.live.translate import GatewayAccount
+
+    at = datetime(2026, 7, 11, 10, 0, tzinfo=timezone.utc)
+    first_runtime, _ = _runtime(tmp_path)
+    first_runtime.live_state.update_account(
+        GatewayAccount("HK-ACC", 1_000_000, 800_000, 200_000, market="HK", currency="HKD")
+    )
+    first_runtime._observe_account(first_runtime.live_state.snapshot(), at)
+
+    restarted_runtime, _ = _runtime(tmp_path)
+    restarted_runtime.live_state.update_account(
+        GatewayAccount("HK-ACC", 990_000, 790_000, 200_000, market="HK", currency="HKD")
+    )
+    restarted_runtime._observe_account(restarted_runtime.live_state.snapshot(), at)
+
+    accounts = {item.market: item for item in restarted_runtime.live_state.snapshot()["accounts"]}
+    assert accounts["HK"].day_pnl == -10_000

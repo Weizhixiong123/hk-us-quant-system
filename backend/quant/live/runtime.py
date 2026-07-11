@@ -25,7 +25,16 @@ from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.scheduler import LiveScheduler, SchedulerAction
 from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
-from quant.live.store import DbPath, list_live_events, live_db_path_for_mode, record_live_event
+from quant.live.store import (
+    DbPath,
+    delete_position_risk_setting,
+    list_live_events,
+    live_db_path_for_mode,
+    load_account_daily_baseline,
+    load_position_risk_setting,
+    record_live_event,
+    save_account_daily_baseline,
+)
 from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 from quant.live.trend import (
     TrendPosition,
@@ -148,6 +157,9 @@ class LiveRuntime:
         self._seeded_day = None
         self._seeded_symbols: set[str] = set()
         self._premarket_catchups: set[tuple[Market, date]] = set()
+        self._position_risk_exit_pending: set[str] = set()
+        self._position_risk_last_attempt: dict[str, datetime] = {}
+        self._known_position_keys: set[str] = set()
         self._manual_intraday_symbols = (
             tuple(manual_intraday_symbols) if manual_intraday_symbols is not None else None
         )
@@ -220,20 +232,121 @@ class LiveRuntime:
             self._seeded_symbols.clear()
         self.market_data.ingest_ticks(snapshot.get("ticks", []))
         self._observe_account(snapshot, at)
+        self._check_position_risk_settings(snapshot, at)
         self.runtime_state.persist_gateway_snapshot(snapshot, at, self.db_path)
         self._catch_up_premarket_scan(at)
         for action in self.scheduler.due_actions(at):
             self.handle_action(action, at)
 
     def _observe_account(self, snapshot: dict[str, Any], at: datetime) -> None:
-        account = snapshot.get("account")
-        if account is None:
+        primary_account = snapshot.get("account")
+        accounts = snapshot.get("accounts") or ([primary_account] if primary_account is not None else [])
+        if not accounts:
             return
-        balance = float(account.balance)
-        self.runtime_state.observe_account_equity(balance, at.date())
-        self.runtime_state.trip_halt_if_breached(balance, self.params.intraday.max_daily_loss_pct)
-        baseline = self.runtime_state.day_start_equity or balance
-        self.live_state.update_account(replace(account, day_pnl=round(balance - baseline, 2)))
+        self.runtime_state.reset_for_day(at.date())
+        for account in accounts:
+            balance = float(account.balance)
+            account_key = account.market or account.account_id
+            baseline = load_account_daily_baseline(account_key, at.date(), self.db_path)
+            if baseline is None:
+                baseline = save_account_daily_baseline(
+                    account_key,
+                    at.date(),
+                    balance,
+                    self.db_path,
+                )
+            self.runtime_state.day_start_equities.setdefault(account_key, baseline)
+            self.runtime_state.observe_account_equity(balance, at.date(), account_key)
+            self.runtime_state.trip_halt_if_breached(
+                balance,
+                self.params.intraday.max_daily_loss_pct,
+                account_key,
+            )
+            baseline = self.runtime_state.day_start_equities.get(account_key, balance)
+            self.live_state.update_account(
+                replace(account, day_pnl=round(balance - baseline, 2))
+            )
+        if primary_account is not None:
+            primary_balance = float(primary_account.balance)
+            primary_key = primary_account.market or primary_account.account_id
+            if self.runtime_state.day_start_equity is None:
+                self.runtime_state.day_start_equity = self.runtime_state.day_start_equities.get(
+                    primary_key,
+                    primary_balance,
+                )
+            self.runtime_state.observe_account_equity(primary_balance, at.date())
+            self.runtime_state.trip_halt_if_breached(
+                primary_balance,
+                self.params.intraday.max_daily_loss_pct,
+            )
+
+    def _check_position_risk_settings(self, snapshot: dict[str, Any], at: datetime) -> None:
+        positions = [item for item in snapshot.get("positions", []) if item.volume > 0]
+        open_keys = {
+            f"{_market_from_symbol(item.symbol)}:{item.symbol.upper()}" for item in positions
+        }
+        for closed_key in self._known_position_keys - open_keys:
+            market, symbol = closed_key.split(":", 1)
+            delete_position_risk_setting(market, symbol, self.db_path)
+        self._known_position_keys = open_keys
+        self._position_risk_exit_pending.intersection_update(open_keys)
+        self._position_risk_last_attempt = {
+            key: attempted_at
+            for key, attempted_at in self._position_risk_last_attempt.items()
+            if key in open_keys
+        }
+        for position in positions:
+            market = _market_from_symbol(position.symbol)
+            key = f"{market}:{position.symbol.upper()}"
+            setting = load_position_risk_setting(market, position.symbol, self.db_path)
+            if (
+                not setting
+                or not setting["active"]
+                or key in self._position_risk_exit_pending
+                or _has_active_close_order(snapshot, position.symbol)
+            ):
+                continue
+            price = self.market_data.latest_price(position.symbol) or float(position.price)
+            pnl_pct = _position_pnl_pct(
+                float(position.price),
+                price,
+                _position_side(position.direction),
+            )
+            stop_loss_pct = float(setting["stop_loss_pct"])
+            take_profit_pct = stop_loss_pct * float(setting["take_profit_r"])
+            if pnl_pct <= -stop_loss_pct:
+                reason = f"持仓独立止损触发 {pnl_pct:.2f}%/{-stop_loss_pct:.2f}%"
+            elif pnl_pct >= take_profit_pct:
+                reason = f"持仓独立止盈触发 {pnl_pct:.2f}%/{take_profit_pct:.2f}%"
+            else:
+                self._position_risk_last_attempt.pop(key, None)
+                continue
+            last_attempt = self._position_risk_last_attempt.get(key)
+            if last_attempt is not None and (at - last_attempt).total_seconds() < 60:
+                continue
+            self._position_risk_last_attempt[key] = at
+            risk = self._live_risk(position.symbol, market, "close", at)
+            if not risk.allowed:
+                self._record_signal("position_risk", position.symbol, risk.reasons, at)
+                continue
+            result = execute_exit_order(
+                gateway=self.gateway,
+                symbol=position.symbol,
+                price=price,
+                quantity=int(position.volume),
+                side=_position_side(position.direction),
+                reason=reason,
+            )
+            self.runtime_state.record_order_result(result.submitted, result.reasons)
+            if result.submitted:
+                self._position_risk_exit_pending.add(key)
+            self._record_signal(
+                "position_risk",
+                position.symbol,
+                result.reasons,
+                at,
+                submitted=result.submitted,
+            )
 
     def handle_action(self, action: SchedulerAction, at: datetime) -> None:
         if action.hook == "intraday_premarket_scan":
@@ -983,12 +1096,35 @@ def _has_position(snapshot: dict[str, Any], symbol: str) -> bool:
     return any(position.symbol.upper() == normalized and position.volume > 0 for position in snapshot.get("positions", []))
 
 
+def _has_active_close_order(snapshot: dict[str, Any], symbol: str) -> bool:
+    normalized = symbol.upper()
+    inactive_words = ("拒", "撤", "CANCEL", "REJECT", "全部成交", "FILLED")
+    for order in snapshot.get("orders", []):
+        if order.symbol.upper() != normalized:
+            continue
+        offset = str(order.offset).upper()
+        if "平" not in offset and "CLOSE" not in offset:
+            continue
+        status = str(order.status).upper()
+        if not any(word in status for word in inactive_words):
+            return True
+    return False
+
+
 def _has_global_order_block(reasons: Sequence[str]) -> bool:
     return any("连续下单失败" in reason or "暂停自动下单" in reason for reason in reasons)
 
 
 def _position_side(direction: str) -> str:
     return "short" if "空" in direction or "SHORT" in direction.upper() else "long"
+
+
+def _position_pnl_pct(avg_price: float, current_price: float, side: str) -> float:
+    if avg_price <= 0:
+        return 0.0
+    if side == "short":
+        return (avg_price - current_price) / avg_price * 100
+    return (current_price - avg_price) / avg_price * 100
 
 
 def _market_from_symbol(symbol: str) -> Market:

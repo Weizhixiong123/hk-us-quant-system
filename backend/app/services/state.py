@@ -28,7 +28,14 @@ from quant.indicators.scoring import ScoreBreakdown, ScoreInputs, score_for_symb
 from quant.live.params import LiveParams
 from quant.live.settings import INTRADAY_PARAM_DEFAULTS, MA_ATR_PARAM_DEFAULTS, load_live_settings, save_live_settings
 from quant.live.state import LiveGatewayState
-from quant.live.store import LiveEvent, list_live_events, live_db_path_for_mode
+from quant.live.store import (
+    delete_position_risk_setting,
+    LiveEvent,
+    list_live_events,
+    live_db_path_for_mode,
+    load_position_risk_setting,
+    save_position_risk_setting,
+)
 
 
 _SERVER_TZ = timezone(timedelta(hours=8))
@@ -464,6 +471,7 @@ class AppState:
             return DashboardSnapshot(
                 server_time=self._now(),
                 account=self._dashboard_account(live_snapshot),
+                accounts=self._dashboard_accounts(live_snapshot),
                 risk=self.risk_status(live_snapshot),
                 strategies=self.strategies,
                 positions=positions,
@@ -487,7 +495,7 @@ class AppState:
             intraday_positions = sum(
                 1 for position in self.positions if position.strategy_id == "intraday_macd"
             )
-        account = self._dashboard_account(live_snapshot)
+        accounts = self._dashboard_accounts(live_snapshot)
         intraday_params = self.params.intraday
         gateway_connected = bool(live_snapshot and live_snapshot.get("connected"))
         gateway_detail = str(live_snapshot.get("detail", "")) if live_snapshot else "未初始化实盘网关"
@@ -503,12 +511,18 @@ class AppState:
                 name="单日最大亏损",
                 status=(
                     "pass"
-                    if account.day_pnl_pct > -intraday_params.max_daily_loss_pct
+                    if all(
+                        item.day_pnl_pct > -intraday_params.max_daily_loss_pct
+                        for item in accounts
+                    )
                     else "blocked"
                 ),
                 detail=(
-                    f"当前 {account.day_pnl_pct:.2f}%，"
-                    f"阈值 -{intraday_params.max_daily_loss_pct:.2f}%"
+                    " / ".join(
+                        f"{item.market or '账户'} {item.day_pnl_pct:.2f}%"
+                        for item in accounts
+                    )
+                    + f"，阈值 -{intraday_params.max_daily_loss_pct:.2f}%"
                 ),
             ),
             RiskRuleStatus(
@@ -539,6 +553,50 @@ class AppState:
         live_positions = self._live_positions(self._live_snapshot())
         return live_positions if self.live_state is not None else self.positions
 
+    def set_position_risk_setting(
+        self,
+        market: str,
+        symbol: str,
+        stop_loss_pct: float,
+        take_profit_r: float,
+        active: bool,
+    ) -> dict:
+        normalized_market = market.strip().upper()
+        normalized_symbol = symbol.strip().upper()
+        position = next(
+            (
+                item
+                for item in self.current_positions()
+                if item.market == normalized_market and item.symbol.upper() == normalized_symbol
+            ),
+            None,
+        )
+        if position is None or position.quantity <= 0:
+            raise KeyError(f"当前没有 {normalized_market} {normalized_symbol} 的有效持仓")
+        close_sides = {"sell"} if position.side == "long" else {"cover"}
+        if any(
+            order.symbol.upper() == normalized_symbol
+            and order.side in close_sides
+            and order.status == "submitted"
+            for order in self.current_orders()
+        ):
+            raise ValueError(f"{normalized_symbol} 已有平仓委托，不能重复设置止盈止损")
+        return save_position_risk_setting(
+            normalized_market,
+            normalized_symbol,
+            stop_loss_pct,
+            take_profit_r,
+            active,
+            self._current_db_path(),
+        )
+
+    def clear_position_risk_setting(self, market: str, symbol: str) -> None:
+        delete_position_risk_setting(
+            market,
+            symbol,
+            self._current_db_path(),
+        )
+
     def current_orders(self) -> list[Order]:
         live_orders = self._live_orders(self._live_snapshot())
         return live_orders if self.live_state is not None else self.orders
@@ -564,7 +622,7 @@ class AppState:
                     self._append_log(
                         source=other_strategy.id,
                         severity="info",
-                        message=f"{other_strategy.name} 已因启用 {strategy.name} 自动暂停。",
+                        message=f"{other_strategy.name} 已因切换至 {strategy.name} 自动暂停。",
                     )
             strategy.enabled = enabled
             strategy.state = "running" if enabled else "paused"
@@ -818,12 +876,23 @@ class AppState:
         account = snapshot.get("account") if snapshot else None
         if account is None:
             return None
+        return self._account_summary(account)
+
+    def _live_accounts(self, snapshot: dict | None) -> list[AccountSummary]:
+        if not snapshot:
+            return []
+        accounts = snapshot.get("accounts") or []
+        summaries = [self._account_summary(account) for account in accounts]
+        return sorted(summaries, key=lambda item: {"HK": 0, "US": 1}.get(item.market, 2))
+
+    def _account_summary(self, account) -> AccountSummary:
         if account.account_id == "DRY-RUN":
             initial = float(
                 load_live_settings().get("runtime", {}).get("default_equity", 1_000_000.0)
             )
             day_pnl = round(account.balance - initial, 2)
             return AccountSummary(
+                account_id=account.account_id,
                 currency="干跑",
                 source="dry_run",
                 total_equity=round(account.balance, 2),
@@ -836,7 +905,9 @@ class AppState:
         day_pnl = round(float(account.day_pnl), 2)
         baseline = float(account.balance) - float(account.day_pnl)
         return AccountSummary(
-            currency="HKD/USD",
+            account_id=account.account_id,
+            market=account.market or None,
+            currency=account.currency or "HKD/USD",
             source="broker",
             total_equity=round(account.balance, 2),
             cash=round(account.available, 2),
@@ -845,6 +916,12 @@ class AppState:
             day_pnl_pct=round(day_pnl / baseline * 100, 2) if baseline else 0.0,
             max_daily_loss_pct=self.account.max_daily_loss_pct,
         )
+
+    def _dashboard_accounts(self, snapshot: dict | None) -> list[AccountSummary]:
+        live_accounts = self._live_accounts(snapshot)
+        if live_accounts:
+            return live_accounts
+        return [self._dashboard_account(snapshot)]
 
     def _dashboard_account(self, snapshot: dict | None) -> AccountSummary:
         live_account = self._live_account(snapshot)
@@ -891,11 +968,12 @@ class AppState:
             basis = quantity * avg_price
             pnl = round(float(item.pnl) if item.pnl else market_value - basis, 2)
             pnl_pct = round(pnl / basis * 100, 2) if basis > 0 else 0.0
+            market = _market_from_symbol(item.symbol)
             positions.append(
                 Position(
                     symbol=item.symbol,
                     name=item.symbol,
-                    market=_market_from_symbol(item.symbol),
+                    market=market,
                     strategy_id=strategy_by_symbol.get(_symbol_key(item.symbol), "live"),
                     side=_side_from_direction(item.direction),
                     quantity=quantity,
@@ -905,6 +983,11 @@ class AppState:
                     pnl=pnl,
                     pnl_pct=pnl_pct,
                     holding_days=0,
+                    risk_setting=load_position_risk_setting(
+                        market,
+                        item.symbol,
+                        self._current_db_path(),
+                    ),
                 )
             )
         return positions

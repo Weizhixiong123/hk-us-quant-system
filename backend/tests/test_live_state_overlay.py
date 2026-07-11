@@ -83,7 +83,7 @@ def test_intraday_strategies_declare_cross_strategy_position_exclusivity():
     assert rule in strategies["ma_atr_intraday"].risk_controls
 
 
-def test_enabling_a_strategy_pauses_every_other_strategy():
+def test_switching_to_an_enabled_strategy_pauses_all_others():
     state = AppState()
 
     enabled = state.set_strategy_enabled("ma_atr_intraday", True)
@@ -600,6 +600,76 @@ def test_broker_account_day_pnl_from_gateway():
     assert account.source == "broker"
     assert account.day_pnl == 2_000  # 不再写死 0,来自券商账户
     assert account.day_pnl_pct == 2.0  # 2000 / (102000-2000) * 100
+
+
+def test_dashboard_keeps_hk_and_us_accounts_separate():
+    live_state = LiveGatewayState()
+    live_state.update_account(
+        GatewayAccount("HK-ACC", 998_819, 600_000, 398_819, 1_200, "HK", "HKD")
+    )
+    live_state.update_account(
+        GatewayAccount("US-ACC", 993_378, 500_000, 493_378, -320, "US", "USD")
+    )
+
+    dashboard = AppState(live_state).dashboard()
+
+    assert [(item.market, item.account_id) for item in dashboard.accounts] == [
+        ("HK", "HK-ACC"),
+        ("US", "US-ACC"),
+    ]
+    assert dashboard.accounts[0].total_equity == 998_819
+    assert dashboard.accounts[1].total_equity == 993_378
+    assert dashboard.account.market == "HK"
+
+
+def test_updating_us_account_does_not_replace_primary_hk_account():
+    live_state = LiveGatewayState()
+    live_state.update_account(GatewayAccount("HK-ACC", 998_819, 600_000, 398_819, market="HK"))
+    live_state.update_account(GatewayAccount("US-ACC", 993_378, 500_000, 493_378, market="US"))
+    live_state.update_account(GatewayAccount("US-ACC", 990_000, 500_000, 490_000, market="US"))
+
+    snapshot = live_state.snapshot()
+
+    assert snapshot["account"].account_id == "HK-ACC"
+    assert {item.market: item.balance for item in snapshot["accounts"]} == {
+        "HK": 998_819,
+        "US": 990_000,
+    }
+
+
+def test_position_risk_setting_is_only_saved_for_an_open_position(tmp_path):
+    live_state = LiveGatewayState()
+    live_state.update_position(GatewayPosition("AAPL", "多", 100, 100, 0))
+    state = AppState(live_state, db_path=tmp_path / "live.sqlite3")
+
+    saved = state.set_position_risk_setting("US", "AAPL", 2.0, 2.5, True)
+    position = state.current_positions()[0]
+
+    assert saved["stop_loss_pct"] == 2.0
+    assert saved["take_profit_r"] == 2.5
+    assert position.risk_setting is not None
+    assert position.risk_setting.active is True
+
+
+def test_position_risk_setting_rejects_symbol_without_position(tmp_path):
+    import pytest
+
+    state = AppState(LiveGatewayState(), db_path=tmp_path / "live.sqlite3")
+
+    with pytest.raises(KeyError):
+        state.set_position_risk_setting("US", "AAPL", 2.0, 2.5, True)
+
+
+def test_position_risk_setting_rejects_position_with_pending_close_order(tmp_path):
+    import pytest
+
+    live_state = LiveGatewayState()
+    live_state.update_position(GatewayPosition("AAPL", "多", 100, 100, 0))
+    live_state.update_order(GatewayOrder("CLOSE-1", "AAPL", "空", "平", 99, 100, 0, "已提交"))
+    state = AppState(live_state, db_path=tmp_path / "live.sqlite3")
+
+    with pytest.raises(ValueError, match="已有平仓委托"):
+        state.set_position_risk_setting("US", "AAPL", 2.0, 2.5, True)
 
 
 def test_dashboard_watchlist_score_is_no_longer_hardcoded_072(monkeypatch, tmp_path):

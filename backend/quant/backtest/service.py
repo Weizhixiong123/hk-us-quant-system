@@ -1354,6 +1354,13 @@ def _int_param(params: dict[str, object], key: str, default: int) -> int:
     return default
 
 
+def _float_param(params: dict[str, object], key: str, default: float) -> float:
+    value = params.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
 def _position_size(request: BacktestRequest, symbol_count: int) -> tuple[float, str]:
     params = request.params_snapshot
     if request.strategy_id in {"intraday_macd", "ma_atr_intraday"}:

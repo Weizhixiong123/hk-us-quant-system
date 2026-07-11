@@ -179,6 +179,47 @@ def test_futu_routes_each_market_to_its_own_gateway():
     assert _futu_route_market("00700", "HK", "NASDAQ") == "US"
 
 
+def test_futu_account_events_are_tagged_by_market():
+    from types import SimpleNamespace
+
+    from quant.live.config import FutuGatewayConfig
+    from quant.live.gateway import FutuLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    state = LiveGatewayState()
+    config = FutuGatewayConfig(
+        "127.0.0.1", 11111, "SIMULATE", "HK", ("HK", "US"), True, False
+    )
+    gateway = FutuLiveGateway(config, state)
+
+    gateway._on_account(
+        SimpleNamespace(
+            type="eAccount.FUTU_HK",
+            data=SimpleNamespace(
+                gateway_name="FUTU_HK",
+                accountid="HK-ACC",
+                balance=1_000_000,
+                frozen=200_000,
+            ),
+        )
+    )
+    gateway._on_account(
+        SimpleNamespace(
+            type="eAccount.FUTU_US",
+            data=SimpleNamespace(
+                gateway_name="FUTU_US",
+                accountid="US-ACC",
+                balance=500_000,
+                frozen=100_000,
+            ),
+        )
+    )
+
+    accounts = {item.market: item for item in state.snapshot()["accounts"]}
+    assert accounts["HK"].currency == "HKD"
+    assert accounts["US"].currency == "USD"
+
+
 def test_futu_send_order_uses_market_specific_gateway():
     from quant.live.config import FutuGatewayConfig
     from quant.live.gateway import FutuLiveGateway

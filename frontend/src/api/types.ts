@@ -7,6 +7,8 @@ export type FutuTradeEnv = "SIMULATE" | "REAL";
 export type TigerTradeEnv = "sandbox" | "live";
 
 export interface AccountSummary {
+  account_id: string;
+  market: Market | null;
   currency: string;
   source: "dry_run" | "broker";
   total_equity: number;
@@ -52,6 +54,22 @@ export interface Position {
   pnl: number;
   pnl_pct: number;
   holding_days: number;
+  risk_setting: PositionRiskSetting | null;
+}
+
+export interface PositionRiskSetting {
+  market: Market;
+  symbol: string;
+  stop_loss_pct: number;
+  take_profit_r: number;
+  active: boolean;
+  updated_at: string;
+}
+
+export interface PositionRiskSettingUpdate {
+  stop_loss_pct: number;
+  take_profit_r: number;
+  active: boolean;
 }
 
 export interface WatchSymbol {
@@ -138,6 +156,7 @@ export interface Candle {
 export interface DashboardSnapshot {
   server_time: string;
   account: AccountSummary;
+  accounts: AccountSummary[];
   risk: RiskRuleStatus[];
   strategies: StrategyConfig[];
   positions: Position[];

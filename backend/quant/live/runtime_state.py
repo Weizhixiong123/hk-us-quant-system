@@ -21,6 +21,7 @@ class StrategyRuntimeState:
     pdt_tracker: PdtTracker = field(default_factory=PdtTracker)
     _current_day: date | None = None
     day_start_equity: float | None = None
+    day_start_equities: dict[str, float] = field(default_factory=dict)
     halted_today: bool = False
     _seen_orders: set[tuple[str, str, float]] = field(default_factory=set)
     _seen_trades: set[str] = field(default_factory=set)
@@ -34,20 +35,30 @@ class StrategyRuntimeState:
         self.stopped_symbols_today.clear()
         self.intraday_half_taken.clear()
         self.day_start_equity = None
+        self.day_start_equities.clear()
         self.halted_today = False
 
-    def observe_account_equity(self, balance: float, day: date) -> None:
+    def observe_account_equity(self, balance: float, day: date, account_key: str = "") -> None:
         self.reset_for_day(day)
-        if self.day_start_equity is None and balance > 0:
+        if account_key:
+            if account_key not in self.day_start_equities and balance > 0:
+                self.day_start_equities[account_key] = float(balance)
+        elif self.day_start_equity is None and balance > 0:
             self.day_start_equity = float(balance)
 
-    def daily_loss_pct(self, current_balance: float) -> float:
-        if not self.day_start_equity or self.day_start_equity <= 0:
+    def daily_loss_pct(self, current_balance: float, account_key: str = "") -> float:
+        baseline = self.day_start_equities.get(account_key) if account_key else self.day_start_equity
+        if not baseline or baseline <= 0:
             return 0.0
-        return (float(current_balance) - self.day_start_equity) / self.day_start_equity * 100
+        return (float(current_balance) - baseline) / baseline * 100
 
-    def trip_halt_if_breached(self, current_balance: float, max_daily_loss_pct: float) -> bool:
-        if self.daily_loss_pct(current_balance) <= -abs(max_daily_loss_pct):
+    def trip_halt_if_breached(
+        self,
+        current_balance: float,
+        max_daily_loss_pct: float,
+        account_key: str = "",
+    ) -> bool:
+        if self.daily_loss_pct(current_balance, account_key) <= -abs(max_daily_loss_pct):
             self.halted_today = True
         return self.halted_today
 

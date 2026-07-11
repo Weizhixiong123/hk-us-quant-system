@@ -21,6 +21,8 @@ class GatewayAccount:
     available: float
     frozen: float
     day_pnl: float = 0.0
+    market: str = ""
+    currency: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,14 +75,17 @@ class GatewayLog:
     message: str
 
 
-def account_from_vnpy(obj: object) -> GatewayAccount:
+def account_from_vnpy(obj: object, market: str = "") -> GatewayAccount:
     balance = float(getattr(obj, "balance", 0.0))
     frozen = float(getattr(obj, "frozen", 0.0))
+    normalized_market = market.strip().upper()
     return GatewayAccount(
         account_id=str(getattr(obj, "accountid", "")),
         balance=balance,
         available=balance - frozen,
         frozen=frozen,
+        market=normalized_market,
+        currency="HKD" if normalized_market == "HK" else "USD" if normalized_market == "US" else "",
     )
 
 

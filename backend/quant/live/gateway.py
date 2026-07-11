@@ -235,7 +235,15 @@ class FutuLiveGateway:
     # ---- 内部事件回调 ----
 
     def _on_account(self, event) -> None:
-        self.state.update_account(account_from_vnpy(event.data))
+        gateway_name = str(getattr(event.data, "gateway_name", ""))
+        event_source = f"{gateway_name} {getattr(event, 'type', '')}".upper()
+        if "FUTU_US" in event_source:
+            market = "US"
+        elif "FUTU_HK" in event_source:
+            market = "HK"
+        else:
+            market = self.config.market
+        self.state.update_account(account_from_vnpy(event.data, market))
         self.state.set_connected(True, f"FUTU {self.config.trd_env} 已收到账户回报")
 
     def _on_position(self, event) -> None:
@@ -433,7 +441,7 @@ class TigerLiveGateway:
     # ---- 内部事件回调 ----
 
     def _on_account(self, event) -> None:
-        self.state.update_account(account_from_vnpy(event.data))
+        self.state.update_account(account_from_vnpy(event.data, self.config.market))
         self.state.set_connected(
             True,
             f"TIGER {self.config.environment} 已收到账户回报",

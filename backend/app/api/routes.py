@@ -15,6 +15,8 @@ from app.models.schemas import (
     LiveSettingsUpdate,
     Order,
     Position,
+    PositionRiskSetting,
+    PositionRiskSettingUpdate,
     RuntimeReloadResult,
     Signal,
     StrategyConfig,
@@ -152,6 +154,32 @@ def positions(request: Request) -> list[Position]:
     return get_state(request).current_positions()
 
 
+@router.put(
+    "/positions/{market}/{symbol}/risk-setting",
+    response_model=PositionRiskSetting,
+)
+def update_position_risk_setting(
+    market: str,
+    symbol: str,
+    payload: PositionRiskSettingUpdate,
+    request: Request,
+) -> dict:
+    if market.upper() not in {"HK", "US"}:
+        raise HTTPException(status_code=400, detail="market 必须是 HK 或 US")
+    try:
+        return get_state(request).set_position_risk_setting(
+            market,
+            symbol,
+            payload.stop_loss_pct,
+            payload.take_profit_r,
+            payload.active,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/positions/unassigned/close")
 def close_unassigned_positions(request: Request) -> dict:
     manager = getattr(request.app.state, "runtime_manager", None)
@@ -163,11 +191,14 @@ def close_unassigned_positions(request: Request) -> dict:
     symbols = [
         position.symbol
         for position in positions
-        if position.strategy_id not in {"intraday_macd", "trend_portfolio"}
+        if position.strategy_id not in {"intraday_macd", "trend_portfolio", "ma_atr_intraday"}
     ]
     if not symbols:
         return {"submitted": 0, "results": []}
 
+    for position in positions:
+        if position.symbol in symbols:
+            get_state(request).clear_position_risk_setting(position.market, position.symbol)
     results = runtime.close_positions_by_symbols(symbols, "未归属持仓平仓")
     return {
         "submitted": sum(1 for item in results if item.get("submitted")),

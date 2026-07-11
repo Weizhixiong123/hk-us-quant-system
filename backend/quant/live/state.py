@@ -18,6 +18,7 @@ class LiveGatewayState:
         self._connected = False
         self._detail = ""
         self._account: GatewayAccount | None = None
+        self._accounts: dict[str, GatewayAccount] = {}
         self._positions: dict[str, GatewayPosition] = {}
         self._orders: dict[str, GatewayOrder] = {}
         self._ticks: dict[str, GatewayTick] = {}
@@ -35,7 +36,9 @@ class LiveGatewayState:
 
     def update_account(self, acc: GatewayAccount) -> None:
         with self._lock:
-            self._account = acc
+            key = acc.market or acc.account_id
+            self._accounts[key] = acc
+            self._account = self._accounts.get("HK") or self._accounts.get("US") or acc
 
     def update_position(self, pos: GatewayPosition) -> None:
         key = f"{pos.symbol}:{pos.direction}"
@@ -69,6 +72,7 @@ class LiveGatewayState:
                 "connected": self._connected,
                 "detail": self._detail,
                 "account": self._account,
+                "accounts": list(self._accounts.values()),
                 "positions": list(self._positions.values()),
                 "orders": list(self._orders.values()),
                 "trades": list(self._trades.values()),

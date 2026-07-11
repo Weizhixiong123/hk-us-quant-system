@@ -20,6 +20,8 @@ IntradaySelectionMode = Literal["auto", "manual"]
 
 
 class AccountSummary(BaseModel):
+    account_id: str = ""
+    market: Market | None = None
     currency: str = "USD/HKD"
     source: Literal["dry_run", "broker"] = "dry_run"
     total_equity: float
@@ -52,6 +54,21 @@ class StrategyConfig(BaseModel):
     updated_at: datetime
 
 
+class PositionRiskSetting(BaseModel):
+    market: Market
+    symbol: str
+    stop_loss_pct: float = Field(gt=0, le=100)
+    take_profit_r: float = Field(gt=0, le=20)
+    active: bool = True
+    updated_at: datetime
+
+
+class PositionRiskSettingUpdate(BaseModel):
+    stop_loss_pct: float = Field(gt=0, le=100)
+    take_profit_r: float = Field(gt=0, le=20)
+    active: bool = True
+
+
 class Position(BaseModel):
     symbol: str
     name: str
@@ -65,6 +82,7 @@ class Position(BaseModel):
     pnl: float
     pnl_pct: float
     holding_days: int
+    risk_setting: PositionRiskSetting | None = None
 
 
 class WatchSymbol(BaseModel):
@@ -140,6 +158,7 @@ class Candle(BaseModel):
 class DashboardSnapshot(BaseModel):
     server_time: datetime
     account: AccountSummary
+    accounts: list[AccountSummary] = Field(default_factory=list)
     risk: list[RiskRuleStatus]
     strategies: list[StrategyConfig]
     positions: list[Position]

@@ -48,6 +48,7 @@ export function useDashboard() {
   let backtestProgressTimer: number | null = null;
 
   const account = computed(() => dashboard.value?.account ?? null);
+  const accounts = computed(() => dashboard.value?.accounts ?? []);
   const strategies = computed(() => dashboard.value?.strategies ?? []);
   const risk = computed(() => dashboard.value?.risk ?? []);
   const positions = computed(() => (dashboard.value?.positions ?? []).map(backfillName));
@@ -90,16 +91,24 @@ export function useDashboard() {
     }
   }
 
-  async function toggleStrategy(strategy: StrategyConfig) {
-    const enabling = !strategy.enabled;
-    const updated = await toggleStrategyRequest(strategy.id, enabling);
-    if (enabling && dashboard.value) {
+  async function activateStrategy(strategyId: string) {
+    const updated = await toggleStrategyRequest(strategyId, true);
+    if (dashboard.value) {
       dashboard.value.strategies = dashboard.value.strategies.map((item) =>
         item.id === updated.id || !item.enabled
           ? item
           : { ...item, enabled: false, state: "paused", updated_at: updated.updated_at }
       );
     }
+    patchStrategy(updated);
+  }
+
+  async function toggleStrategy(strategy: StrategyConfig) {
+    if (!strategy.enabled) {
+      await activateStrategy(strategy.id);
+      return;
+    }
+    const updated = await toggleStrategyRequest(strategy.id, false);
     patchStrategy(updated);
   }
 
@@ -263,6 +272,8 @@ export function useDashboard() {
 
   return {
     account,
+    accounts,
+    activateStrategy,
     backtest,
     backtestError,
     backtestProgress,
