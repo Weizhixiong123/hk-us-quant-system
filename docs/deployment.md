@@ -79,7 +79,7 @@ sudo -u quant npm ci
 sudo -u quant npm run build
 ```
 
-`vnpy_futu` 不在普通 PyPI 依赖中，必须按当前使用版本的官方安装方式装进同一个 `.venv`。
+`requirements-broker.txt` 已固定项目验证过的官方 `vnpy_futu` GitHub 版本。
 
 ### 4.2 为每个富途登录账号准备 OpenD
 
@@ -147,6 +147,23 @@ sudo systemctl reload nginx
 ```
 
 生产环境应再配置 HTTPS，并仅通过防火墙开放 Nginx 的 80/443；OpenD 的 `11111`、`11112` 和 Telnet 运维端口不得暴露到公网。
+
+### 4.5 使用 Docker Compose 部署应用
+
+如果希望容器化前端和后端，可以在仓库根目录直接执行：
+
+```bash
+cp deploy/docker/.env.example .env
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+镜像采用多阶段构建：Node 阶段生成 Vue 的 `frontend/dist`，最终 Python 镜像由 FastAPI 同时提供页面、API 和 WebSocket。运行数据保存在命名卷 `hk-us-quant-data`。
+
+Compose 使用 Linux `host` 网络，使容器可以通过 `127.0.0.1:11111`、`127.0.0.1:11112` 连接宿主机 OpenD，同时 OpenD 仍可只监听本机。该配置用于 Ubuntu/Linux 服务器，不以 Docker Desktop 作为生产运行环境。
+
+FutuOpenD 不放进 Compose，仍使用前述 `futu-opend@.service` 管理。更多命令见 `deploy/docker/README.md`。
 
 ## 5. 上线检查
 

@@ -1,0 +1,32 @@
+name: hk-us-quant-system
+
+services:
+  quant-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_BROKER_DEPS: ${INSTALL_BROKER_DEPS:-1}
+    image: hk-us-quant-system:${IMAGE_TAG:-latest}
+    network_mode: host
+    init: true
+    environment:
+      APP_ENV: production
+      TZ: ${TZ:-Asia/Shanghai}
+      LIVE_SETTINGS_PATH: /app/backend/data/live-settings.json
+      FRONTEND_DIST_DIR: /app/frontend/dist
+    volumes:
+      - quant-data:/app/backend/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+volumes:
+  quant-data:
+    name: hk-us-quant-data
