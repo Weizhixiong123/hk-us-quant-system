@@ -75,7 +75,6 @@ interface EventRow {
 const {
   account,
   accounts,
-  activateStrategy,
   backtest,
   backtestError,
   backtestProgress,
@@ -102,26 +101,8 @@ const {
 const activeView = ref<ViewName>("dashboard");
 const selectedStrategyId = ref<string | null>(null);
 
-// 策略切换确认 —— 点击策略卡先弹确认框，点确定才真正切换；取消回退
-const pendingStrategy = ref<{ id: string; name: string } | null>(null);
-const previousStrategyId = ref<string | null>(null);
-
 function selectStrategy(strategy: { id: string; name: string }) {
-  if (selectedStrategyId.value === strategy.id || pendingStrategy.value) return;
-  previousStrategyId.value = selectedStrategyId.value;
-  pendingStrategy.value = { id: strategy.id, name: strategy.name };
-}
-
-async function confirmStrategySwitch() {
-  if (!pendingStrategy.value) return;
-  const strategyId = pendingStrategy.value.id;
-  await activateStrategy(strategyId);
-  selectedStrategyId.value = strategyId;
-  pendingStrategy.value = null;
-}
-
-function cancelStrategySwitch() {
-  pendingStrategy.value = null;
+  selectedStrategyId.value = strategy.id;
 }
 
 const tradeHistory = ref<Trade[]>([]);
@@ -553,6 +534,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   risk: "风控",
   intraday_macd: "策略一",
   trend_portfolio: "策略二",
+  ma_atr_intraday: "策略三",
+  position_risk: "持仓风控",
+  runtime: "运行时",
   broker: "券商",
   dry_run: "干跑",
   backtest: "回测",
@@ -1051,8 +1035,8 @@ function logTime(value: string): string {
 
           <section class="strategy-switch-section" aria-label="策略切换区">
             <div class="strategy-switch-title">
-              <strong>策略切换区</strong>
-              <span>选择并管理您的交易策略</span>
+              <strong>策略配置</strong>
+              <span>点击卡片仅查看配置，不会改变运行状态</span>
             </div>
             <div class="strategy-switchboard">
               <button
@@ -1061,6 +1045,7 @@ function logTime(value: string): string {
                 class="strategy-switch-card"
                 :class="{ selected: selectedStrategy?.id === strategy.id, muted: !strategy.enabled }"
                 type="button"
+                :aria-label="`查看策略${index + 1}：${strategy.name}配置，不改变运行状态`"
                 @click="selectStrategy(strategy)"
               >
                 <span class="strategy-select-dot" />
@@ -1084,7 +1069,7 @@ function logTime(value: string): string {
                   <span class="strategy-switch-facts">
                     <span><small>今日信号</small><strong>{{ signals.filter((signal) => signal.strategy_id === strategy.id).length }}</strong></span>
                     <span><small>{{ strategy.id === 'intraday_macd' ? '今日开仓' : '持仓数量' }}</small><strong>{{ positions.filter((position) => position.strategy_id === strategy.id).length }}</strong></span>
-                    <span class="switch-actions"><b>查看配置</b><em>{{ strategy.enabled ? '已启用' : '启用' }}</em></span>
+                    <span class="switch-actions"><b>查看配置</b><em>{{ strategy.enabled ? '运行中' : '未启用' }}</em></span>
                   </span>
                 </span>
               </button>
@@ -1322,23 +1307,6 @@ function logTime(value: string): string {
       </span>
     </footer>
 
-    <!-- 策略切换确认对话框 -->
-    <Transition name="fade">
-      <div v-if="pendingStrategy" class="strategy-confirm-mask" @click.self="cancelStrategySwitch">
-        <div class="strategy-confirm-dialog" :key="pendingStrategy.id">
-          <strong class="strategy-confirm-title">切换策略</strong>
-          <p class="strategy-confirm-desc">
-            确定要切换到
-            <em>「{{ pendingStrategy.name }}」</em>
-            吗？当前策略的状态会保留。
-          </p>
-          <div class="strategy-confirm-actions">
-            <button class="text-button" type="button" @click="cancelStrategySwitch">取消</button>
-            <button class="text-button primary" type="button" @click="confirmStrategySwitch">确定</button>
-          </div>
-        </div>
-      </div>
-    </Transition>
   </main>
 </template>
 

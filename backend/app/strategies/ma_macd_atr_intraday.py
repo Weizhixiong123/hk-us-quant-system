@@ -43,17 +43,17 @@ def macd(
 def has_bullish_cross(points: list[tuple[float, float, float]]) -> bool:
     if len(points) < 2:
         return False
-    _, prev_dea, _ = points[-2]
+    prev_dif, prev_dea, _ = points[-2]
     dif, dea, _ = points[-1]
-    return dif > dea and prev_dea >= dif  # noqa
+    return prev_dif <= prev_dea and dif > dea
 
 
 def has_bearish_cross(points: list[tuple[float, float, float]]) -> bool:
     if len(points) < 2:
         return False
-    _, prev_dea, _ = points[-2]
+    prev_dif, prev_dea, _ = points[-2]
     dif, dea, _ = points[-1]
-    return dif < dea and prev_dea <= dif  # noqa
+    return prev_dif >= prev_dea and dif < dea
 
 
 def atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int = 5) -> list[float]:

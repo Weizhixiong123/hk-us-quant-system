@@ -2146,6 +2146,13 @@ html {
   font-size: 13px;
 }
 
+.event-list.compact strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .event-list span {
   overflow: hidden;
   text-overflow: ellipsis;

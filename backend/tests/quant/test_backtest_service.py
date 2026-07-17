@@ -50,6 +50,53 @@ def _minute_fetch(symbol, market, start, end, interval):
         index=index,
     )
 
+
+def _ma_atr_minute_fetch(symbol, market, start, end, interval):
+    assert interval == "1m"
+    indexes = [
+        pd.date_range(f"{day:%Y-%m-%d} 09:30", periods=390, freq="min", tz="America/New_York")
+        for day in pd.bdate_range("2024-01-02", periods=6)
+    ]
+    index = indexes[0]
+    for item in indexes[1:]:
+        index = index.append(item)
+    close = [100 + (offset % 120) * 0.02 for offset in range(len(index))]
+    return pd.DataFrame(
+        {
+            "Open": close,
+            "High": [value + 0.2 for value in close],
+            "Low": [value - 0.2 for value in close],
+            "Close": close,
+            "Volume": [2_000] * len(index),
+        },
+        index=index,
+    )
+
+
+def test_ma_atr_backtest_runs_with_float_params():
+    result = run_backtest(
+        BacktestRequest(
+            strategy_id="ma_atr_intraday",
+            market="US",
+            start_date="2024-01-01",
+            end_date="2024-03-01",
+            symbols=["AAPL"],
+            initial_capital=100_000,
+            params_snapshot={
+                "atr_multiplier": 1.4,
+                "stop_loss_pct": 2.0,
+                "take_profit_pct": 5.0,
+                "trailing_start_pct": 2.5,
+                "trailing_stop_pct": 1.2,
+            },
+        ),
+        minute_fetcher=_ma_atr_minute_fetch,
+    )
+
+    assert result.strategy_id == "ma_atr_intraday"
+    assert result.equity_curve
+    assert any("MA+MACD+ATR" in note for note in result.notes)
+
 def test_trend_backtest_uses_price_data():
     result = run_backtest(
         BacktestRequest(

@@ -22,6 +22,7 @@ interface ParamDefinition {
   min: number;
   max: number;
   step: number;
+  displayScale?: number;
 }
 
 interface ParamGroup {
@@ -89,7 +90,7 @@ const INTRADAY_PARAM_GROUPS: ParamGroup[] = [
     title: "盘前筛选",
     icon: Activity,
     params: [
-      { key: "min_turnover", label: "最低日均成交额", hint: "过滤流动性不足的标的", unit: "元", min: 0, max: 10000000000, step: 100000 },
+      { key: "min_turnover", label: "最低日均成交额", hint: "过滤流动性不足的标的", unit: "万元", min: 0, max: 10000000000, step: 100000, displayScale: 10000 },
       { key: "min_amplitude_pct", label: "前日振幅下限", hint: "前一交易日振幅最小值", unit: "%", min: 0, max: 100, step: 0.5 },
       { key: "max_amplitude_pct", label: "前日振幅上限", hint: "必须不小于振幅下限", unit: "%", min: 0, max: 100, step: 0.5 },
       { key: "min_price", label: "最低股价", hint: "过滤价格过低的标的", unit: "元", min: 0, max: 100000, step: 0.5 },
@@ -180,7 +181,7 @@ const MA_ATR_PARAM_GROUPS: ParamGroup[] = [
     params: [
       { key: "open_after_minutes", label: "开盘等待", hint: "开盘后N分钟才允许开仓", unit: "分钟", min: 0, max: 240, step: 5 },
       { key: "close_before_minutes", label: "尾盘停开", hint: "收盘前N分钟停止新开仓", unit: "分钟", min: 0, max: 240, step: 5 },
-      { key: "min_turnover", label: "最低成交额", hint: "自动选股成交额门槛", unit: "元", min: 0, max: 10000000000, step: 100000 },
+      { key: "min_turnover", label: "最低成交额", hint: "自动选股成交额门槛", unit: "万元", min: 0, max: 10000000000, step: 100000, displayScale: 10000 },
       { key: "min_amplitude_pct", label: "最低振幅", hint: "前日振幅最小值", unit: "%", min: 0, max: 100, step: 0.5 },
       { key: "max_amplitude_pct", label: "最高振幅", hint: "前日振幅最大值", unit: "%", min: 0, max: 100, step: 0.5 },
       { key: "min_price", label: "最低股价", hint: "过滤价格过低的标的", unit: "元", min: 0, max: 100000, step: 0.5 },
@@ -224,36 +225,6 @@ const TREND_RULES: RuleGroup[] = [
   }
 ];
 
-const MA_ATR_RULES: RuleGroup[] = [
-  {
-    title: "信号引擎",
-    icon: BarChart3,
-    items: [
-      "1小时 EMA3/8 定多空方向",
-      "10分钟 EMA11/30 趋势确认",
-      "5分钟 EMA3/8 金叉死叉触发入场",
-      "MACD 金叉确认动能",
-      "ATR(5)动态止损保护",
-    ]
-  },
-  {
-    title: "平仓规则",
-    icon: Target,
-    items: [
-      "5分钟 EMA 下穿(多) / 上穿(空)",
-      "MACD 死叉(多) / 金叉(空)",
-      "10分钟 EMA 反转",
-      "ATR 动态止损",
-      "固定止盈 3% / 移动止盈跟踪",
-    ]
-  },
-  {
-    title: "执行约束",
-    icon: ShieldCheck,
-    items: props.strategy.risk_controls
-  }
-];
-
 watch(
   () => props.strategy.params,
   (params) => {
@@ -286,15 +257,100 @@ const stateLabel = computed(() => {
   return props.strategy.state === "running" ? "运行中" : props.strategy.state;
 });
 
+function strategyNumberParam(key: string, fallback: number): number {
+  const value = props.strategy.params[key];
+  return typeof value === "number" ? value : fallback;
+}
+
+const maAtrParamGroups = computed<ParamGroup[]>(() => {
+  const hintByKey: Record<string, string> = {
+    slow_fast_ema: `${strategyNumberParam("slow_k_minutes", 60)}分钟 EMA 快线`,
+    slow_slow_ema: `${strategyNumberParam("slow_k_minutes", 60)}分钟 EMA 慢线`,
+    mid_fast_ema: `${strategyNumberParam("mid_k_minutes", 10)}分钟 EMA 快线`,
+    mid_slow_ema: `${strategyNumberParam("mid_k_minutes", 10)}分钟 EMA 慢线`,
+    fast_fast_ema: `${strategyNumberParam("fast_k_minutes", 5)}分钟 EMA 快线`,
+    fast_slow_ema: `${strategyNumberParam("fast_k_minutes", 5)}分钟 EMA 慢线`
+  };
+
+  return MA_ATR_PARAM_GROUPS.map((group) => ({
+    ...group,
+    params: group.params.map((param) => ({
+      ...param,
+      hint: hintByKey[param.key] ?? param.hint
+    }))
+  }));
+});
+
 const paramGroups = computed(() => {
   if (props.strategy.id === "intraday_macd") return INTRADAY_PARAM_GROUPS;
-  if (props.strategy.id === "ma_atr_intraday") return MA_ATR_PARAM_GROUPS;
+  if (props.strategy.id === "ma_atr_intraday") return maAtrParamGroups.value;
   return TREND_PARAM_GROUPS;
+});
+
+const maAtrRules = computed<RuleGroup[]>(() => {
+  const slowMinutes = strategyNumberParam("slow_k_minutes", 60);
+  const midMinutes = strategyNumberParam("mid_k_minutes", 10);
+  const fastMinutes = strategyNumberParam("fast_k_minutes", 5);
+  const slowFastEma = strategyNumberParam("slow_fast_ema", 3);
+  const slowSlowEma = strategyNumberParam("slow_slow_ema", 8);
+  const midFastEma = strategyNumberParam("mid_fast_ema", 11);
+  const midSlowEma = strategyNumberParam("mid_slow_ema", 30);
+  const fastFastEma = strategyNumberParam("fast_fast_ema", 3);
+  const fastSlowEma = strategyNumberParam("fast_slow_ema", 8);
+  const macdFast = strategyNumberParam("macd_fast", 12);
+  const macdSlow = strategyNumberParam("macd_slow", 26);
+  const macdSignal = strategyNumberParam("macd_signal", 9);
+  const atrPeriod = strategyNumberParam("atr_period", 5);
+  const atrMultiplier = strategyNumberParam("atr_multiplier", 1.2);
+  const stopLoss = strategyNumberParam("stop_loss_pct", 1.5);
+  const takeProfit = strategyNumberParam("take_profit_pct", 3);
+  const trailingStart = strategyNumberParam("trailing_start_pct", 2);
+  const trailingStop = strategyNumberParam("trailing_stop_pct", 1);
+  const positionFraction = strategyNumberParam("position_fraction_pct", 10);
+  const maxPositions = strategyNumberParam("max_positions", 3);
+  const dailyLoss = strategyNumberParam("max_daily_loss_pct", 3);
+  const trailingEnabled = props.strategy.params.trailing_enabled !== false;
+
+  return [
+    {
+      title: "信号引擎",
+      icon: BarChart3,
+      items: [
+        `${slowMinutes}分钟 EMA${slowFastEma}/${slowSlowEma} 定多空方向`,
+        `${midMinutes}分钟 EMA${midFastEma}/${midSlowEma} 趋势确认`,
+        `${fastMinutes}分钟 EMA${fastFastEma}/${fastSlowEma} 金叉死叉触发入场`,
+        `MACD(${macdFast}, ${macdSlow}, ${macdSignal}) 金叉确认动能`,
+        `ATR(${atrPeriod}) × ${atrMultiplier} 动态止损保护`
+      ]
+    },
+    {
+      title: "平仓规则",
+      icon: Target,
+      items: [
+        `${fastMinutes}分钟 EMA${fastFastEma}/${fastSlowEma} 下穿(多) / 上穿(空)`,
+        `MACD(${macdFast}, ${macdSlow}, ${macdSignal}) 死叉(多) / 金叉(空)`,
+        `${midMinutes}分钟 EMA${midFastEma}/${midSlowEma} 反转`,
+        `ATR(${atrPeriod}) × ${atrMultiplier} 动态止损 / 固定止损 ${stopLoss}%`,
+        trailingEnabled
+          ? `固定止盈 ${takeProfit}% / 移动止盈 ${trailingStart}% 启动，回撤 ${trailingStop}%`
+          : `固定止盈 ${takeProfit}% / 移动止盈未启用`
+      ]
+    },
+    {
+      title: "执行约束",
+      icon: ShieldCheck,
+      items: [
+        `单次开仓仓位 ${positionFraction}% / 最大同时持仓 ${maxPositions} 只`,
+        `单日最大亏损 ${dailyLoss}%`,
+        "同一标的跨策略排他，已有仓位优先"
+      ]
+    }
+  ];
 });
 
 const ruleGroups = computed(() => {
   if (props.strategy.id === "intraday_macd") return INTRADAY_RULES;
-  if (props.strategy.id === "ma_atr_intraday") return MA_ATR_RULES;
+  if (props.strategy.id === "ma_atr_intraday") return maAtrRules.value;
   return TREND_RULES;
 });
 
@@ -361,20 +417,33 @@ function beginParamEdit(definition: ParamDefinition): void {
   activeParamKey.value = definition.key;
 }
 
+function displayParamValue(definition: ParamDefinition): ParamValue {
+  const value = paramDraft[definition.key];
+  if (value === "" || typeof value !== "number") return value;
+  return value / (definition.displayScale ?? 1);
+}
+
+function displayParamStep(value: number, definition: ParamDefinition): number {
+  return value / (definition.displayScale ?? 1);
+}
+
 function updateParamDraft(definition: ParamDefinition, event: Event): void {
   const target = event.target as HTMLInputElement;
-  paramDraft[definition.key] = target.value;
+  const scale = definition.displayScale ?? 1;
+  paramDraft[definition.key] = target.value === "" ? "" : Number(target.value) * scale;
 }
 
 function commitParam(definition: ParamDefinition, event: Event): void {
   const target = event.target as HTMLInputElement;
   activeParamKey.value = null;
   const current = props.strategy.params[definition.key];
-  const rawValue = target.value.trim();
-  const value = typeof current === "number" ? Number(rawValue) : rawValue;
+  const inputValue = target.value.trim();
+  const value = typeof current === "number"
+    ? Number(inputValue) * (definition.displayScale ?? 1)
+    : inputValue;
   if (
-    rawValue === "" ||
-    (typeof value === "number" && (!Number.isFinite(value) || value < definition.min || value > definition.max))
+    inputValue === "" ||
+    (typeof value === "number" && !Number.isFinite(value))
   ) {
     paramDraft[definition.key] = current;
     return;
@@ -418,7 +487,7 @@ onBeforeUnmount(() => pendingTimers.forEach((timer) => window.clearTimeout(timer
   <article class="strategy-detail-shell" :class="{ muted: !strategy.enabled }">
     <header class="strategy-detail-head">
       <div>
-        <p class="eyebrow">当前策略配置</p>
+        <p class="eyebrow">正在查看的策略配置</p>
         <h2>{{ strategy.name }}</h2>
         <p>参数修改后立即生效，安全约束由运行时代码强制执行。</p>
       </div>
@@ -453,11 +522,9 @@ onBeforeUnmount(() => pendingTimers.forEach((timer) => window.clearTimeout(timer
                 <span>{{ param.label }}</span>
                 <div class="strategy-param-input">
                   <input
-                    :value="paramDraft[param.key]"
+                    :value="displayParamValue(param)"
                     type="number"
-                    :min="param.min"
-                    :max="param.max"
-                    :step="param.step"
+                    :step="displayParamStep(param.step, param)"
                     @focus="beginParamEdit(param)"
                     @input="updateParamDraft(param, $event)"
                     @blur="commitParam(param, $event)"
@@ -476,10 +543,10 @@ onBeforeUnmount(() => pendingTimers.forEach((timer) => window.clearTimeout(timer
         <section class="strategy-rail-card safety">
           <header class="strategy-section-head compact">
             <div>
-              <h3>{{ strategy.id === "intraday_macd" ? "安全硬约束" : "策略固定规则" }}</h3>
-              <p>{{ strategy.id === "intraday_macd" ? "交易安全底线锁定" : "运行时强制执行" }}</p>
+              <h3>{{ strategy.id === "intraday_macd" ? "安全硬约束" : strategy.id === "ma_atr_intraday" ? "当前规则与约束" : "策略固定规则" }}</h3>
+              <p>{{ strategy.id === "intraday_macd" ? "交易安全底线锁定" : strategy.id === "ma_atr_intraday" ? "随左侧参数实时同步" : "运行时强制执行" }}</p>
             </div>
-            <span class="locked"><LockKeyhole :size="13" />不可修改</span>
+            <span v-if="strategy.id !== 'ma_atr_intraday'" class="locked"><LockKeyhole :size="13" />不可修改</span>
           </header>
 
           <div class="strategy-rule-groups">

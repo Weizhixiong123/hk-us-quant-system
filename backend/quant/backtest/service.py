@@ -195,6 +195,11 @@ def run_backtest(
                 position_source, symbols_source,
                 allowed_entry_dates=(intraday_selection_days or {}).get(symbol),
             )
+            if not symbol_run.trade_rows:
+                notes.append(
+                    f"{symbol} 已加载 {len(minutes)} 根1分钟线，但未出现同时满足"
+                    "60m/10m/5m 趋势与 MACD 交叉的入场信号。"
+                )
             _log_backtest(f"策略三回测完成 symbol={symbol} trades={len(symbol_run.trade_rows)}")
             runs.append(symbol_run)
             continue
@@ -818,7 +823,7 @@ def _run_ma_atr_minutes(
                 )
                 highs_fast = [bar.high for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
                 lows_fast = [bar.low for bar in aggregator.interval_bars(symbol, fast_k_minutes, limit=80)]
-                if min(len(closes_slow), len(closes_mid), len(closes_fast)) >= slow_ema + 1:
+                if min(len(closes_slow), len(closes_mid), len(closes_fast)) >= macd_slow + 1:
                     signal = evaluate_ma_atr_entry_signal(
                         symbol=symbol, market=request.market, at=at,
                         closes_slow=closes_slow, closes_mid=closes_mid, closes_fast=closes_fast,
