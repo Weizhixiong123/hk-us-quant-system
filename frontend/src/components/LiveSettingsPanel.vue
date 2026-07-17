@@ -5,8 +5,10 @@ import {
   CheckCircle2,
   Clock3,
   Link2,
+  Plus,
   PlayCircle,
   ShieldCheck,
+  Trash2,
   UserRound
 } from "lucide-vue-next";
 import { fetchLiveSettings, reloadRuntime, saveLiveSettings } from "../api/client";
@@ -40,6 +42,16 @@ const form = reactive<LiveSettingsForm>({
   futu: {
     host: "127.0.0.1",
     port: 11111,
+    accounts: [
+      {
+        id: "default",
+        name: "默认账户",
+        host: "127.0.0.1",
+        port: 11111,
+        markets: ["HK", "US"]
+      }
+    ],
+    market_accounts: { HK: "default", US: "default" },
     trd_env: "SIMULATE",
     market: "HK",
     markets: ["HK", "US"],
@@ -153,10 +165,20 @@ function setRuntimeMode(value: RuntimeMode): void {
 }
 
 function buildPayload(): LiveSettingsUpdate {
+  ensureFutuRoutes();
+  const primaryFutuAccount = form.futu.accounts[0];
   const payload: LiveSettingsUpdate = {
     runtime: { ...form.runtime, enabled: true },
     futu: {
       ...form.futu,
+      host: primaryFutuAccount.host,
+      port: Number(primaryFutuAccount.port),
+      accounts: form.futu.accounts.map((account) => ({
+        ...account,
+        port: Number(account.port),
+        markets: [...account.markets]
+      })),
+      market_accounts: { ...form.futu.market_accounts },
       market: form.futu.markets[0] ?? "HK"
     },
     tiger: {
@@ -200,6 +222,83 @@ function toggleMarket(markets: Market[], market: Market): void {
     return;
   }
   markets.push(market);
+}
+
+function toggleFutuMarket(market: Market): void {
+  toggleMarket(form.futu.markets, market);
+  if (
+    form.futu.markets.includes(market) &&
+    !form.futu.accounts.some((account) => account.markets.includes(market))
+  ) {
+    form.futu.accounts[0].markets.push(market);
+  }
+  ensureFutuRoutes();
+}
+
+function toggleFutuAccountMarket(accountIndex: number, market: Market): void {
+  const account = form.futu.accounts[accountIndex];
+  const index = account.markets.indexOf(market);
+  if (index >= 0) {
+    const otherProviderExists = form.futu.accounts.some(
+      (candidate, candidateIndex) =>
+        candidateIndex !== accountIndex && candidate.markets.includes(market)
+    );
+    if (
+      account.markets.length > 1 &&
+      (!form.futu.markets.includes(market) || otherProviderExists)
+    ) {
+      account.markets.splice(index, 1);
+    }
+  } else {
+    account.markets.push(market);
+  }
+  ensureFutuRoutes();
+}
+
+function addFutuAccount(): void {
+  let sequence = form.futu.accounts.length + 1;
+  let accountId = `account_${sequence}`;
+  while (form.futu.accounts.some((account) => account.id === accountId)) {
+    sequence += 1;
+    accountId = `account_${sequence}`;
+  }
+  form.futu.accounts.push({
+    id: accountId,
+    name: `富途账户 ${sequence}`,
+    host: "127.0.0.1",
+    port: 11110 + sequence,
+    markets: [...form.futu.markets]
+  });
+}
+
+function removeFutuAccount(index: number): void {
+  if (form.futu.accounts.length === 1) return;
+  form.futu.accounts.splice(index, 1);
+  for (const market of form.futu.markets) {
+    if (!form.futu.accounts.some((account) => account.markets.includes(market))) {
+      form.futu.accounts[0].markets.push(market);
+    }
+  }
+  ensureFutuRoutes();
+}
+
+function futuAccountsForMarket(market: Market) {
+  return form.futu.accounts.filter((account) => account.markets.includes(market));
+}
+
+function ensureFutuRoutes(): void {
+  for (const market of form.futu.markets) {
+    const candidates = futuAccountsForMarket(market);
+    if (!candidates.length) {
+      throw new Error(`${market} 市场没有可用的富途账户`);
+    }
+    if (!candidates.some((account) => account.id === form.futu.market_accounts[market])) {
+      form.futu.market_accounts[market] = candidates[0].id;
+    }
+  }
+  for (const market of ["HK", "US"] as Market[]) {
+    if (!form.futu.markets.includes(market)) delete form.futu.market_accounts[market];
+  }
 }
 
 async function applySettings(): Promise<void> {
@@ -377,22 +476,14 @@ onMounted(loadSettings);
               <Link2 :size="24" />
             </div>
             <div>
-              <h2>富途连接</h2>
-              <p>配置富途开放平台连接信息</p>
+              <h2>富途账户与 OpenD</h2>
+              <p>添加账户，并为港股和美股选择执行账户</p>
             </div>
           </div>
           <Link2 :size="19" />
         </header>
 
         <div class="settings-form two-col">
-          <label>
-            <span>Host</span>
-            <input v-model.trim="form.futu.host" />
-          </label>
-          <label>
-            <span>Port</span>
-            <input v-model.number="form.futu.port" type="number" min="1" />
-          </label>
           <label>
             <span>交易环境</span>
             <div class="locked-env" :class="{ danger: runtimeMode === 'live' }">
@@ -406,14 +497,14 @@ onMounted(loadSettings);
               <button
                 type="button"
                 :class="{ active: form.futu.markets.includes('HK') }"
-                @click="toggleMarket(form.futu.markets, 'HK')"
+                @click="toggleFutuMarket('HK')"
               >
                 港股
               </button>
               <button
                 type="button"
                 :class="{ active: form.futu.markets.includes('US') }"
-                @click="toggleMarket(form.futu.markets, 'US')"
+                @click="toggleFutuMarket('US')"
               >
                 美股
               </button>
@@ -421,11 +512,84 @@ onMounted(loadSettings);
           </label>
         </div>
 
+        <div class="futu-account-list">
+          <article
+            v-for="(account, accountIndex) in form.futu.accounts"
+            :key="`${account.id}-${accountIndex}`"
+            class="futu-account-card"
+          >
+            <header>
+              <strong>{{ account.name || account.id || `账户 ${accountIndex + 1}` }}</strong>
+              <button
+                type="button"
+                class="account-remove-button"
+                :disabled="form.futu.accounts.length === 1"
+                aria-label="删除富途账户"
+                @click="removeFutuAccount(accountIndex)"
+              >
+                <Trash2 :size="16" />
+              </button>
+            </header>
+            <div class="settings-form two-col">
+              <label>
+                <span>账户标识</span>
+                <input v-model.trim="account.id" placeholder="例如 hk_main" />
+              </label>
+              <label>
+                <span>显示名称</span>
+                <input v-model.trim="account.name" placeholder="例如 港股主账户" />
+              </label>
+              <label>
+                <span>OpenD Host</span>
+                <input v-model.trim="account.host" placeholder="127.0.0.1" />
+              </label>
+              <label>
+                <span>OpenD Port</span>
+                <input v-model.number="account.port" type="number" min="1" max="65535" />
+              </label>
+              <label class="account-market-field">
+                <span>允许交易市场</span>
+                <div class="market-checks">
+                  <button
+                    type="button"
+                    :class="{ active: account.markets.includes('HK') }"
+                    @click="toggleFutuAccountMarket(accountIndex, 'HK')"
+                  >港股</button>
+                  <button
+                    type="button"
+                    :class="{ active: account.markets.includes('US') }"
+                    @click="toggleFutuAccountMarket(accountIndex, 'US')"
+                  >美股</button>
+                </div>
+              </label>
+            </div>
+          </article>
+          <button type="button" class="add-account-button" @click="addFutuAccount">
+            <Plus :size="17" />
+            添加富途账户
+          </button>
+        </div>
+
+        <div class="settings-form two-col futu-route-settings">
+          <label v-for="market in form.futu.markets" :key="market">
+            <span>{{ market === 'HK' ? '港股' : '美股' }}执行账户</span>
+            <select v-model="form.futu.market_accounts[market]">
+              <option
+                v-for="account in futuAccountsForMarket(market)"
+                :key="account.id"
+                :value="account.id"
+              >
+                {{ account.name }}（{{ account.host }}:{{ account.port }}）
+              </option>
+            </select>
+          </label>
+        </div>
+
         <div class="connection-note">
           <ShieldCheck :size="28" />
           <div>
             <strong>连接状态</strong>
-            <span>{{ runtimeMode === "dry_run" ? "干跑模式不连接券商" : "应用后自动连接 FutuOpenD" }}</span>
+            <span>{{ runtimeMode === "dry_run" ? "干跑模式不连接券商" : `应用后连接 ${form.futu.accounts.length} 个账户配置中的执行 OpenD` }}</span>
           </div>
           <i />
         </div>

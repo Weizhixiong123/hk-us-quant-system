@@ -104,7 +104,7 @@ def test_tiger_setting_maps_config_keys():
 
 
 def test_futu_setting_maps_vnpy_futu_chinese_keys():
-    from quant.live.config import FutuGatewayConfig
+    from quant.live.config import FutuAccountConfig, FutuGatewayConfig
 
     config = FutuGatewayConfig(
         host="127.0.0.1",
@@ -114,6 +114,11 @@ def test_futu_setting_maps_vnpy_futu_chinese_keys():
         markets=("HK", "US"),
         paper=True,
         real_trading_confirmed=False,
+        accounts=(
+            FutuAccountConfig("hk_main", "港股主账户", "127.0.0.1", 11111, ("HK",)),
+            FutuAccountConfig("us_main", "美股主账户", "10.0.0.8", 11112, ("US",)),
+        ),
+        market_accounts=(("HK", "hk_main"), ("US", "us_main")),
     )
 
     setting = _futu_setting_from_config(config)
@@ -125,7 +130,13 @@ def test_futu_setting_maps_vnpy_futu_chinese_keys():
         "市场": "HK",
         "环境": "SIMULATE",
     }
-    assert _futu_setting_from_config(config, "US")["市场"] == "US"
+    assert _futu_setting_from_config(config, "US") == {
+        "密码": "",
+        "地址": "10.0.0.8",
+        "端口": 11112,
+        "市场": "US",
+        "环境": "SIMULATE",
+    }
 
 
 def test_futu_subscribe_uses_quote_only():
@@ -172,6 +183,7 @@ def test_futu_subscribe_uses_quote_only():
 def test_futu_routes_each_market_to_its_own_gateway():
     assert _futu_gateway_name("HK") == "FUTU_HK"
     assert _futu_gateway_name("US") == "FUTU_US"
+    assert _futu_gateway_name("US", "us-main") == "FUTU_US_MAIN_US"
     assert _futu_route_market("00700.HK", "US") == "HK"
     assert _futu_route_market("AAPL.US", "HK") == "US"
     assert _futu_route_market("AAPL", "HK") == "US"

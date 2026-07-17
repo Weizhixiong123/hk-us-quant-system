@@ -1,0 +1,20 @@
+[Unit]
+Description=FutuOpenD instance %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/futu-opend/%i
+ExecStart=/opt/futu-opend/%i/FutuOpenD -cfg_file=/opt/futu-opend/%i/FutuOpenD.xml -console=0
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

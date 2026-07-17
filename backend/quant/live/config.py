@@ -12,6 +12,15 @@ _TIGER_LIVE_TRADING_CONFIRM = "I_UNDERSTAND_TIGER_REAL_MONEY_RISK"
 
 
 @dataclass(frozen=True)
+class FutuAccountConfig:
+    account_id: str
+    name: str
+    host: str
+    port: int
+    markets: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class FutuGatewayConfig:
     host: str
     port: int
@@ -20,6 +29,23 @@ class FutuGatewayConfig:
     markets: tuple[str, ...]
     paper: bool
     real_trading_confirmed: bool
+    accounts: tuple[FutuAccountConfig, ...] = ()
+    market_accounts: tuple[tuple[str, str], ...] = ()
+
+    def account_for(self, market: str) -> FutuAccountConfig:
+        normalized_market = market.upper()
+        route = dict(self.market_accounts).get(normalized_market)
+        if route:
+            for account in self.accounts:
+                if account.account_id == route:
+                    return account
+        return FutuAccountConfig(
+            account_id="default",
+            name="默认账户",
+            host=self.host,
+            port=self.port,
+            markets=self.markets,
+        )
 
 
 @dataclass(frozen=True)
@@ -50,14 +76,33 @@ def load_futu_config() -> FutuGatewayConfig:
         _REAL_TRADING_CONFIRM,
         bool(settings.get("real_trading_confirmed", False)),
     )
+    host = os.getenv("FUTU_HOST", str(settings.get("host", "127.0.0.1")))
+    port = int(os.getenv("FUTU_PORT", str(settings.get("port", "11111"))))
+    markets = _markets_from_env("FUTU_MARKETS", settings.get("markets", ["HK", "US"]))
+    accounts = _futu_accounts_from_settings(settings.get("accounts"), host, port, markets)
+    if len(accounts) == 1 and accounts[0].account_id == "default":
+        accounts = (
+            FutuAccountConfig(
+                account_id="default",
+                name=accounts[0].name,
+                host=host,
+                port=port,
+                markets=accounts[0].markets,
+            ),
+        )
+    market_accounts = _market_accounts_from_settings(
+        settings.get("market_accounts"), accounts, markets
+    )
     return FutuGatewayConfig(
-        host=os.getenv("FUTU_HOST", str(settings.get("host", "127.0.0.1"))),
-        port=int(os.getenv("FUTU_PORT", str(settings.get("port", "11111")))),
+        host=host,
+        port=port,
         trd_env=trd_env,
         market=os.getenv("FUTU_MARKET", str(settings.get("market", "HK"))).upper(),
-        markets=_markets_from_env("FUTU_MARKETS", settings.get("markets", ["HK", "US"])),
+        markets=markets,
         paper=trd_env == "SIMULATE",
         real_trading_confirmed=real_confirmed,
+        accounts=accounts,
+        market_accounts=market_accounts,
     )
 
 
@@ -134,3 +179,78 @@ def _markets_from_env(name: str, default: object) -> tuple[str, ...]:
         if market in {"HK", "US"} and market not in markets:
             markets.append(market)
     return tuple(markets or ["HK"])
+
+
+def _futu_accounts_from_settings(
+    value: object,
+    default_host: str,
+    default_port: int,
+    default_markets: tuple[str, ...],
+) -> tuple[FutuAccountConfig, ...]:
+    raw_accounts = value if isinstance(value, list) else []
+    accounts: list[FutuAccountConfig] = []
+    for item in raw_accounts:
+        if not isinstance(item, dict):
+            continue
+        account_id = str(item.get("id", "")).strip()
+        if not account_id:
+            continue
+        markets = _markets_from_value(item.get("markets"), default_markets)
+        accounts.append(
+            FutuAccountConfig(
+                account_id=account_id,
+                name=str(item.get("name", account_id)).strip() or account_id,
+                host=str(item.get("host", default_host)).strip() or default_host,
+                port=int(item.get("port", default_port)),
+                markets=markets,
+            )
+        )
+    if accounts:
+        return tuple(accounts)
+    return (
+        FutuAccountConfig(
+            account_id="default",
+            name="默认账户",
+            host=default_host,
+            port=default_port,
+            markets=default_markets,
+        ),
+    )
+
+
+def _market_accounts_from_settings(
+    value: object,
+    accounts: tuple[FutuAccountConfig, ...],
+    markets: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    requested = value if isinstance(value, dict) else {}
+    routes: list[tuple[str, str]] = []
+    for market in markets:
+        account_id = str(requested.get(market, "")).strip()
+        matching = next(
+            (
+                account
+                for account in accounts
+                if account.account_id == account_id and market in account.markets
+            ),
+            None,
+        )
+        if matching is None:
+            matching = next(
+                (account for account in accounts if market in account.markets),
+                None,
+            )
+        if matching is None:
+            raise ValueError(f"no Futu account is configured for {market}")
+        routes.append((market, matching.account_id))
+    return tuple(routes)
+
+
+def _markets_from_value(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw_items = value if isinstance(value, list | tuple) else default
+    markets: list[str] = []
+    for item in raw_items:
+        market = str(item).strip().upper()
+        if market in {"HK", "US"} and market not in markets:
+            markets.append(market)
+    return tuple(markets or default)

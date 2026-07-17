@@ -1,0 +1,31 @@
+{
+  "runtime": {
+    "enabled": true,
+    "dry_run": false,
+    "broker": "futu"
+  },
+  "futu": {
+    "trd_env": "SIMULATE",
+    "markets": ["HK", "US"],
+    "accounts": [
+      {
+        "id": "hk_main",
+        "name": "港股主账户",
+        "host": "127.0.0.1",
+        "port": 11111,
+        "markets": ["HK"]
+      },
+      {
+        "id": "us_main",
+        "name": "美股主账户",
+        "host": "127.0.0.1",
+        "port": 11112,
+        "markets": ["US"]
+      }
+    ],
+    "market_accounts": {
+      "HK": "hk_main",
+      "US": "us_main"
+    }
+  }
+}

@@ -239,10 +239,20 @@ export interface LiveRuntimeSettings {
 export interface FutuLiveSettings {
   host: string;
   port: number;
+  accounts: FutuAccountSettings[];
+  market_accounts: Partial<Record<Market, string>>;
   trd_env: FutuTradeEnv;
   market: Market;
   markets: Market[];
   real_trading_confirmed: boolean;
+}
+
+export interface FutuAccountSettings {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  markets: Market[];
 }
 
 export interface TigerLiveSettings {

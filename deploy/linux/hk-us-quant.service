@@ -1,0 +1,21 @@
+[Unit]
+Description=HK/US Quant System API and Trading Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/hk-us-quant-system/backend
+EnvironmentFile=/etc/hk-us-quant/backend.env
+ExecStart=/opt/hk-us-quant-system/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

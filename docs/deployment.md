@@ -54,13 +54,99 @@ release\hk-us-quant-client\
 
 手动压缩该目录后即可发送给客户。客户解压后双击 `start.bat`，浏览器访问 `http://127.0.0.1:8000`。如果客户机器上的内置运行时不可用，可双击 `repair-runtime.bat` 重建依赖。
 
-## 4. 生产部署建议
+## 4. Ubuntu 服务器部署
 
-- 后端：`uvicorn app.main:app --host 0.0.0.0 --port 8000`，外层用 Nginx 或 Caddy 反代。
-- 前端：`npm run build` 后部署 `frontend/dist` 静态文件。
-- 配置：券商凭证只放服务器环境变量或密钥管理服务，不提交到仓库。
-- 数据：订单、成交、日志、策略参数和回测结果需要接 SQLite/MySQL/PostgreSQL 持久化。
-- 进程：FutuOpenD、后端 API、策略引擎、数据记录器应由 supervisor/systemd/PM2 等守护。
+仓库提供了 `deploy/linux` 下的 systemd、Nginx 和配置示例。以下路径与服务文件中的默认值一致。
+
+### 4.1 安装应用
+
+```bash
+sudo useradd --system --create-home --home-dir /var/lib/hk-us-quant --shell /usr/sbin/nologin quant
+sudo mkdir -p /opt/hk-us-quant-system /opt/futu-opend /etc/hk-us-quant /var/lib/hk-us-quant
+sudo chown -R quant:quant /opt/hk-us-quant-system /opt/futu-opend /var/lib/hk-us-quant
+```
+
+把仓库放到 `/opt/hk-us-quant-system` 后安装并构建：
+
+```bash
+cd /opt/hk-us-quant-system/backend
+sudo -u quant python3 -m venv .venv
+sudo -u quant .venv/bin/python -m pip install -r requirements.txt
+sudo -u quant .venv/bin/python -m pip install -r requirements-broker.txt
+
+cd /opt/hk-us-quant-system/frontend
+sudo -u quant npm ci
+sudo -u quant npm run build
+```
+
+`vnpy_futu` 不在普通 PyPI 依赖中，必须按当前使用版本的官方安装方式装进同一个 `.venv`。
+
+### 4.2 为每个富途登录账号准备 OpenD
+
+每个登录账号使用独立目录和端口，例如：
+
+```text
+/opt/futu-opend/hk_main/FutuOpenD.xml  -> api_port 11111
+/opt/futu-opend/us_main/FutuOpenD.xml  -> api_port 11112
+```
+
+每个目录都必须保留完整官方命令行包，包括 `FutuOpenD`、`FutuOpenD.xml` 和 `Appdata.dat`。首次登录先以前台方式运行，并完成手机/设备验证码：
+
+```bash
+sudo -u quant -H /opt/futu-opend/hk_main/FutuOpenD \
+  -cfg_file=/opt/futu-opend/hk_main/FutuOpenD.xml -console=1
+```
+
+需要验证时，在 OpenD 控制台执行：
+
+```text
+req_phone_verify_code
+input_phone_verify_code -code=收到的验证码
+```
+
+对每个账号分别完成一次。不要删除 `/var/lib/hk-us-quant/.com.futunn.FutuOpenD` 下的设备数据。
+
+### 4.3 配置账户和市场路由
+
+```bash
+sudo cp deploy/linux/backend.env.example /etc/hk-us-quant/backend.env
+sudo cp deploy/linux/live-settings.example.json /var/lib/hk-us-quant/live-settings.json
+sudo chown quant:quant /var/lib/hk-us-quant/live-settings.json
+sudo chmod 600 /etc/hk-us-quant/backend.env /var/lib/hk-us-quant/live-settings.json
+```
+
+`futu.accounts` 可以添加多个 OpenD；`futu.market_accounts` 决定港股、美股订单分别发往哪个账户。也可以启动 Web 后在“运行设置 → 富途账户与 OpenD”中新增、删除或切换执行账户。
+
+同一市场当前只选择一个执行账户，系统不会在多个账户之间自动拆单或分配资金。
+
+### 4.4 启动服务
+
+```bash
+sudo cp deploy/linux/futu-opend@.service /etc/systemd/system/
+sudo cp deploy/linux/hk-us-quant.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now futu-opend@hk_main futu-opend@us_main
+sudo systemctl enable --now hk-us-quant
+```
+
+查看状态：
+
+```bash
+systemctl status futu-opend@hk_main futu-opend@us_main hk-us-quant
+journalctl -u hk-us-quant -f
+curl http://127.0.0.1:8000/api/health
+```
+
+安装 Nginx 反代：
+
+```bash
+sudo cp deploy/linux/nginx-hk-us-quant.conf /etc/nginx/sites-available/hk-us-quant
+sudo ln -s /etc/nginx/sites-available/hk-us-quant /etc/nginx/sites-enabled/hk-us-quant
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+生产环境应再配置 HTTPS，并仅通过防火墙开放 Nginx 的 80/443；OpenD 的 `11111`、`11112` 和 Telnet 运维端口不得暴露到公网。
 
 ## 5. 上线检查
 

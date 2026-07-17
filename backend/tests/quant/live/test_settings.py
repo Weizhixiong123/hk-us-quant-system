@@ -33,6 +33,68 @@ def test_save_live_settings_accepts_live_without_confirmation(tmp_path):
     assert settings["tiger"]["environment"] == "live"
 
 
+def test_save_live_settings_supports_multiple_futu_accounts(tmp_path):
+    path = tmp_path / "live-settings.json"
+
+    settings = save_live_settings(
+        {
+            "futu": {
+                "accounts": [
+                    {
+                        "id": "hk_main",
+                        "name": "港股主账户",
+                        "host": "127.0.0.1",
+                        "port": 11111,
+                        "markets": ["HK"],
+                    },
+                    {
+                        "id": "us_main",
+                        "name": "美股主账户",
+                        "host": "127.0.0.1",
+                        "port": 11112,
+                        "markets": ["US"],
+                    },
+                ],
+                "market_accounts": {"HK": "hk_main", "US": "us_main"},
+            }
+        },
+        path,
+    )
+
+    assert [account["id"] for account in settings["futu"]["accounts"]] == [
+        "hk_main",
+        "us_main",
+    ]
+    assert settings["futu"]["market_accounts"] == {
+        "HK": "hk_main",
+        "US": "us_main",
+    }
+
+
+def test_futu_account_must_cover_every_enabled_market(tmp_path):
+    path = tmp_path / "live-settings.json"
+
+    with pytest.raises(ValueError, match="each enabled futu market"):
+        save_live_settings(
+            {
+                "futu": {
+                    "markets": ["HK", "US"],
+                    "accounts": [
+                        {
+                            "id": "hk_only",
+                            "name": "港股账户",
+                            "host": "127.0.0.1",
+                            "port": 11111,
+                            "markets": ["HK"],
+                        }
+                    ],
+                    "market_accounts": {"HK": "hk_only"},
+                }
+            },
+            path,
+        )
+
+
 def test_clear_private_key(tmp_path):
     path = tmp_path / "live-settings.json"
     save_live_settings({"tiger": {"private_key": "secret"}}, path)

@@ -44,15 +44,22 @@ class FutuLiveGateway:
         self._synced_order_traded: dict[str, float] = {}
 
     def connect(self) -> None:
-        try:
-            _check_tcp_endpoint(self.config.host, self.config.port)
-        except OSError as exc:
-            detail = (
-                f"无法连接 FutuOpenD {self.config.host}:{self.config.port}，"
-                "请启动 FutuOpenD 或切换到干跑模式"
-            )
-            self.state.set_connected(False, detail)
-            raise ConnectionError(detail) from exc
+        checked_endpoints: set[tuple[str, int]] = set()
+        for market in self.config.markets:
+            account = self.config.account_for(market)
+            endpoint = (account.host, account.port)
+            if endpoint in checked_endpoints:
+                continue
+            try:
+                _check_tcp_endpoint(*endpoint)
+            except OSError as exc:
+                detail = (
+                    f"无法连接富途账户 {account.name} 的 FutuOpenD "
+                    f"{account.host}:{account.port}，请启动对应 OpenD 或切换到干跑模式"
+                )
+                self.state.set_connected(False, detail)
+                raise ConnectionError(detail) from exc
+            checked_endpoints.add(endpoint)
 
         # 延迟 import:远程环境无 vnpy,导入只在本地真正调用时发生
         from vnpy.event import EventEngine
@@ -78,7 +85,8 @@ class FutuLiveGateway:
 
         try:
             for market in self.config.markets:
-                gateway_name = _futu_gateway_name(market)
+                account = self.config.account_for(market)
+                gateway_name = _futu_gateway_name(market, account.account_id)
                 self._main_engine.add_gateway(FutuGateway, gateway_name)
                 self._gateway_names[market] = gateway_name
                 self._main_engine.connect(
@@ -237,9 +245,9 @@ class FutuLiveGateway:
     def _on_account(self, event) -> None:
         gateway_name = str(getattr(event.data, "gateway_name", ""))
         event_source = f"{gateway_name} {getattr(event, 'type', '')}".upper()
-        if "FUTU_US" in event_source:
+        if event_source.endswith("_US") or "_US " in event_source:
             market = "US"
-        elif "FUTU_HK" in event_source:
+        elif event_source.endswith("_HK") or "_HK " in event_source:
             market = "HK"
         else:
             market = self.config.market
@@ -474,19 +482,26 @@ def _tiger_setting_from_config(config: TigerGatewayConfig) -> dict[str, str]:
     }
 
 
-def _futu_gateway_name(market: str) -> str:
-    return f"{_FUTU_GATEWAY_NAME}_{market.upper()}"
+def _futu_gateway_name(market: str, account_id: str = "default") -> str:
+    if account_id == "default":
+        return f"{_FUTU_GATEWAY_NAME}_{market.upper()}"
+    safe_account_id = "".join(
+        character if character.isalnum() else "_" for character in account_id.upper()
+    )
+    return f"{_FUTU_GATEWAY_NAME}_{safe_account_id}_{market.upper()}"
 
 
 def _futu_setting_from_config(
     config: FutuGatewayConfig,
     market: str | None = None,
 ) -> dict[str, object]:
+    selected_market = (market or config.market).upper()
+    account = config.account_for(selected_market)
     return {
         "密码": "",
-        "地址": config.host,
-        "端口": config.port,
-        "市场": (market or config.market).upper(),
+        "地址": account.host,
+        "端口": account.port,
+        "市场": selected_market,
         "环境": config.trd_env,
     }
 

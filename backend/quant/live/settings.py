@@ -83,6 +83,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "futu": {
         "host": "127.0.0.1",
         "port": 11111,
+        "accounts": [
+            {
+                "id": "default",
+                "name": "默认账户",
+                "host": "127.0.0.1",
+                "port": 11111,
+                "markets": ["HK", "US"],
+            }
+        ],
+        "market_accounts": {"HK": "default", "US": "default"},
         "trd_env": "SIMULATE",
         "market": "HK",
         "markets": ["HK", "US"],
@@ -114,6 +124,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,23}$")
+_ACCOUNT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 
 
 def default_settings_path() -> Path:
@@ -205,6 +216,14 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
     futu["trd_env"] = str(futu.get("trd_env", "SIMULATE")).upper()
     futu["markets"] = _normalize_markets(futu.get("markets"), futu.get("market", "HK"))
     futu["market"] = futu["markets"][0]
+    futu["accounts"] = _normalize_futu_accounts(
+        futu.get("accounts"), futu["host"], futu["port"], futu["markets"]
+    )
+    futu["host"] = futu["accounts"][0]["host"]
+    futu["port"] = futu["accounts"][0]["port"]
+    futu["market_accounts"] = _normalize_market_accounts(
+        futu.get("market_accounts"), futu["accounts"], futu["markets"]
+    )
     futu["real_trading_confirmed"] = bool(futu.get("real_trading_confirmed", False))
 
     tiger = settings.setdefault("tiger", {})
@@ -335,6 +354,65 @@ def _normalize_markets(value: Any, fallback: Any) -> list[str]:
     return markets or ["HK"]
 
 
+def _normalize_futu_accounts(
+    value: Any,
+    legacy_host: str,
+    legacy_port: int,
+    default_markets: list[str],
+) -> list[dict[str, Any]]:
+    raw_accounts = value if isinstance(value, list) else []
+    accounts: list[dict[str, Any]] = []
+    for raw in raw_accounts:
+        if not isinstance(raw, Mapping):
+            continue
+        account_id = str(raw.get("id", "")).strip()
+        host = str(raw.get("host", legacy_host)).strip() or legacy_host
+        port = int(raw.get("port", legacy_port))
+        markets = _normalize_markets(raw.get("markets"), default_markets[0])
+        accounts.append(
+            {
+                "id": account_id,
+                "name": str(raw.get("name", account_id)).strip() or account_id,
+                "host": host,
+                "port": port,
+                "markets": markets,
+            }
+        )
+    if not accounts:
+        accounts.append(
+            {
+                "id": "default",
+                "name": "默认账户",
+                "host": legacy_host,
+                "port": legacy_port,
+                "markets": list(default_markets),
+            }
+        )
+    elif len(accounts) == 1 and accounts[0]["id"] == "default":
+        accounts[0]["host"] = legacy_host
+        accounts[0]["port"] = legacy_port
+    return accounts
+
+
+def _normalize_market_accounts(
+    value: Any,
+    accounts: list[dict[str, Any]],
+    markets: list[str],
+) -> dict[str, str]:
+    requested = value if isinstance(value, Mapping) else {}
+    routes: dict[str, str] = {}
+    for market in markets:
+        requested_id = str(requested.get(market, "")).strip()
+        candidates = [account for account in accounts if market in account["markets"]]
+        selected = next(
+            (account for account in candidates if account["id"] == requested_id),
+            candidates[0] if candidates else None,
+        )
+        if selected is not None:
+            routes[market] = selected["id"]
+    return routes
+
+
 def _validate(settings: Mapping[str, Any]) -> None:
     runtime = settings["runtime"]
     if runtime["broker"] not in {"futu", "tiger"}:
@@ -349,6 +427,19 @@ def _validate(settings: Mapping[str, Any]) -> None:
         raise ValueError("futu.trd_env must be SIMULATE or REAL")
     if not set(futu["markets"]).issubset({"HK", "US"}):
         raise ValueError("futu.markets must contain HK or US")
+    account_ids: set[str] = set()
+    for account in futu["accounts"]:
+        if not _ACCOUNT_ID_PATTERN.fullmatch(account["id"]):
+            raise ValueError("futu account id must use letters, numbers, underscore or hyphen")
+        if account["id"] in account_ids:
+            raise ValueError("futu account id must be unique")
+        account_ids.add(account["id"])
+        if not account["host"]:
+            raise ValueError("futu account host is required")
+        if not 1 <= account["port"] <= 65535:
+            raise ValueError("futu account port must be between 1 and 65535")
+    if set(futu["market_accounts"]) != set(futu["markets"]):
+        raise ValueError("each enabled futu market must select an account")
     tiger = settings["tiger"]
     if tiger["environment"] not in {"sandbox", "live"}:
         raise ValueError("tiger.environment must be sandbox or live")

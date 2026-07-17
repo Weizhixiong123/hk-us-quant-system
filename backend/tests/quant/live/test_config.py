@@ -41,6 +41,8 @@ def test_real_env_override_with_confirmation(monkeypatch):
     cfg = load_futu_config()
     assert cfg.host == "192.168.1.10"
     assert cfg.port == 22222
+    assert cfg.account_for("HK").host == "192.168.1.10"
+    assert cfg.account_for("HK").port == 22222
     assert cfg.trd_env == "REAL"
     assert cfg.paper is False
     assert cfg.real_trading_confirmed is True
@@ -86,6 +88,46 @@ def test_futu_config_supports_multiple_markets_from_env(monkeypatch):
     cfg = load_futu_config()
 
     assert cfg.markets == ("HK", "US")
+
+
+def test_futu_config_routes_markets_to_selected_accounts(monkeypatch, tmp_path):
+    from quant.live.settings import save_live_settings
+
+    path = tmp_path / "live-settings.json"
+    save_live_settings(
+        {
+            "futu": {
+                "accounts": [
+                    {
+                        "id": "hk_main",
+                        "name": "港股主账户",
+                        "host": "127.0.0.1",
+                        "port": 11111,
+                        "markets": ["HK"],
+                    },
+                    {
+                        "id": "us_main",
+                        "name": "美股主账户",
+                        "host": "10.0.0.8",
+                        "port": 11112,
+                        "markets": ["US"],
+                    },
+                ],
+                "market_accounts": {"HK": "hk_main", "US": "us_main"},
+            }
+        },
+        path,
+    )
+    monkeypatch.setenv("LIVE_SETTINGS_PATH", str(path))
+    monkeypatch.delenv("FUTU_HOST", raising=False)
+    monkeypatch.delenv("FUTU_PORT", raising=False)
+
+    cfg = load_futu_config()
+
+    assert cfg.account_for("HK").account_id == "hk_main"
+    assert cfg.account_for("HK").port == 11111
+    assert cfg.account_for("US").account_id == "us_main"
+    assert cfg.account_for("US").host == "10.0.0.8"
 
 
 def test_tiger_live_env_does_not_require_confirmation(monkeypatch):
