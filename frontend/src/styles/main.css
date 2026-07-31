@@ -1594,12 +1594,12 @@ html {
 
 .ops-account-overview {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(240px, 0.72fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr)) repeat(2, minmax(220px, 0.72fr));
   gap: 14px;
 }
 
 .ops-account-overview.single {
-  grid-template-columns: minmax(0, 2fr) minmax(240px, 0.72fr);
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(220px, 0.72fr));
 }
 
 .account-summary-card {

@@ -11,7 +11,7 @@ from quant.live.clock import Market, is_trading_day, market_time, premarket_scan
 from quant.live.data_provider import DefaultLiveDataProvider, LiveDataProvider
 from quant.live.params import LiveParams
 from quant.live.executor import execute_exit_order, execute_intraday_entry, execute_portfolio_entry
-from quant.live.gateway import FutuLiveGateway, TigerLiveGateway
+from quant.live.gateway import FutuLiveGateway, HistoryKlineQuota, TigerLiveGateway
 from quant.live.intraday import (
     IntradayPosition,
     build_premarket_watchlist,
@@ -27,13 +27,17 @@ from quant.live.settings import load_live_settings
 from quant.live.state import LiveGatewayState
 from quant.live.store import (
     DbPath,
+    count_history_kline_usage,
     delete_position_risk_setting,
+    get_or_create_history_kline_daily_budget,
     list_live_events,
     live_db_path_for_mode,
     load_account_daily_baseline,
     load_position_risk_setting,
+    record_history_kline_usage,
     record_live_event,
     save_account_daily_baseline,
+    save_history_kline_quota_status,
 )
 from quant.live.translate import GatewayAccount, GatewayOrder, GatewayPosition, GatewayTick, GatewayTrade
 from quant.live.trend import (
@@ -47,13 +51,20 @@ from quant.indicators.scoring import ScoreInputs, score_for_symbol
 from quant.screening.intraday_screener import IntradayCandidate
 
 
+_HISTORY_QUOTA_WINDOW_DAYS = 7
+_HISTORY_QUOTA_RESERVE_RATIO = 0.20
+_AUTO_CANDIDATE_FALLBACK_LIMIT = 20
+_HISTORY_QUOTA_RETRY_SECONDS = 30
+_HISTORY_QUOTA_REFRESH_MINUTES = 5
+
+
 def _candidate_components_for(
     selected: list[str],
     candidates: Sequence[IntradayCandidate],
 ) -> dict[str, dict[str, float | None]]:
     """把被选标的的盘前 IntradayCandidate 字段映射成 score_components 子集。
 
-    只取 runtime 这一刻**已知**的字段(prev_amplitude_pct / avg_turnover);
+    只取 runtime 这一刻**已知**的字段(prev_amplitude_pct / avg_turnover / turnover_rate);
     需要日线 / 分钟线的维度留给 state.py 读时填 None。
     """
     by_sym = {c.symbol: c for c in candidates}
@@ -63,6 +74,7 @@ def _candidate_components_for(
         out[sym] = {
             "prev_amplitude_pct": getattr(cand, "prev_amplitude_pct", None),
             "avg_turnover": getattr(cand, "avg_turnover", None),
+            "intraday_volume_ratio": _candidate_turnover_score(cand),
         }
     return out
 
@@ -74,16 +86,14 @@ def _score_inputs_for_candidate(
 ) -> "ScoreInputs":
     """盘前阶段为自动选股标的构造 ScoreInputs。
 
-    盘前只有 IntradayCandidate 上的字段可用(振幅 / 成交额);
+    盘前只有 IntradayCandidate 上的字段可用(振幅 / 成交额 / 换手率);
     其他维度(一致度/量比/趋势)为 None → 评分引擎给 0.5 中性值。
     """
-    from datetime import datetime, timezone
-
     return ScoreInputs(
         symbol=symbol,
         market=market,
         consistency=None,
-        intraday_volume_ratio=None,
+        intraday_volume_ratio=_candidate_turnover_score(candidate),
         daily_volume_ratio=None,
         prev_amplitude_pct=getattr(candidate, "prev_amplitude_pct", None),
         price_vs_ma20_pct=None,
@@ -92,6 +102,11 @@ def _score_inputs_for_candidate(
         avg_turnover=getattr(candidate, "avg_turnover", None),
         selection_age_hours=None,
     )
+
+
+def _candidate_turnover_score(candidate: IntradayCandidate | None) -> float | None:
+    rate = float(getattr(candidate, "turnover_rate", 0.0))
+    return min(rate / 5.0, 1.0) if rate > 0 else None
 
 
 class RuntimeGateway(Protocol):
@@ -160,6 +175,7 @@ class LiveRuntime:
         self._position_risk_exit_pending: set[str] = set()
         self._position_risk_last_attempt: dict[str, datetime] = {}
         self._known_position_keys: set[str] = set()
+        self._history_quota_next_refresh_at: datetime | None = None
         self._manual_intraday_symbols = (
             tuple(manual_intraday_symbols) if manual_intraday_symbols is not None else None
         )
@@ -178,10 +194,11 @@ class LiveRuntime:
         if not self.config.enabled or self._running:
             return
         self.gateway.connect()
+        self._maybe_refresh_history_quota_status(datetime.now(timezone.utc))
         subscription_symbols = self._subscription_symbols()
         self.gateway.subscribe(subscription_symbols)
         if self._manual_intraday_symbols is not None:
-            self._seed_history(subscription_symbols)
+            self._seed_history(subscription_symbols, source="manual")
             now = datetime.now(timezone.utc)
             for market in self.scheduler.markets:
                 manual_infos = [item for item in self._manual_intraday_symbols if item.market == market]
@@ -225,12 +242,17 @@ class LiveRuntime:
 
     def run_once(self, at: datetime) -> None:
         self.gateway.sync_trades()
+        self._maybe_refresh_history_quota_status(at)
         snapshot = self.live_state.snapshot()
         self.runtime_state.reset_for_day(at.date())
         if self._seeded_day != at.date():
             self._seeded_day = at.date()
             self._seeded_symbols.clear()
         self.market_data.ingest_ticks(snapshot.get("ticks", []))
+        self._seed_history(
+            [position.symbol for position in snapshot.get("positions", []) if position.volume > 0],
+            source="position",
+        )
         self._observe_account(snapshot, at)
         self._check_position_risk_settings(snapshot, at)
         self.runtime_state.persist_gateway_snapshot(snapshot, at, self.db_path)
@@ -384,21 +406,30 @@ class LiveRuntime:
             min_turnover_rate=self.params.intraday.min_turnover_rate,
         )
         candidate_by_symbol = {candidate.symbol: candidate for candidate in candidates}
-        ranked_symbols: list[tuple[float, str]] = []
+        ranked_symbols: list[tuple[float, float, float, float, str]] = []
         for symbol in screened_symbols:
+            candidate = candidate_by_symbol.get(symbol)
             breakdown = score_for_symbol(
-                _score_inputs_for_candidate(symbol, market, candidate_by_symbol.get(symbol)),
+                _score_inputs_for_candidate(symbol, market, candidate),
                 half_life_hours=self.params.intraday.score_half_life_hours,
                 shortable=self._is_shortable(symbol),
                 shortable_bonus_pts=self.params.intraday.shortable_bonus_pts,
             )
             if breakdown.total >= self.params.intraday.auto_min_score:
-                ranked_symbols.append((breakdown.total, symbol))
-        ranked_symbols.sort(key=lambda item: (-item[0], item[1]))
-        auto_symbols = [
-            symbol
-            for _, symbol in ranked_symbols[: self.params.intraday.max_auto_candidates]
-        ]
+                ranked_symbols.append(
+                    (
+                        breakdown.total,
+                        float(getattr(candidate, "avg_turnover", 0.0)),
+                        abs(float(getattr(candidate, "prev_amplitude_pct", 0.0)) - 4.0),
+                        float(getattr(candidate, "turnover_rate", 0.0)),
+                        symbol,
+                    )
+                )
+        ranked_symbols.sort(key=lambda item: (-item[0], -item[1], item[2], -item[3], item[4]))
+        auto_symbols = self._select_auto_symbols_for_quota(
+            [symbol for *_, symbol in ranked_symbols],
+            market,
+        )
 
         symbols = _merge_unique([*manual_symbols, *auto_symbols])
         self.runtime_state.intraday_watchlist = _replace_market_symbols(
@@ -408,7 +439,8 @@ class LiveRuntime:
         )
         if symbols:
             self.gateway.subscribe(symbols)
-            self._seed_history(symbols)
+            self._seed_history(manual_symbols, source="manual")
+            self._seed_history(auto_symbols, source="auto", market=market)
         self._record_intraday_selection(
             market=market,
             symbols=symbols,
@@ -418,6 +450,43 @@ class LiveRuntime:
             manual_infos=manual_infos,
             at=at,
         )
+
+    def _select_auto_symbols_for_quota(
+        self,
+        ranked_symbols: list[str],
+        market: Market,
+    ) -> list[str]:
+        if not ranked_symbols:
+            return []
+        if getattr(self.gateway, "history_kline_quota", None) is None:
+            return ranked_symbols[:_AUTO_CANDIDATE_FALLBACK_LIMIT]
+        try:
+            quota_result = self._refresh_history_quota_status()
+        except Exception as exc:
+            self._record_log("runtime", f"历史K线额度查询失败，自动观察池暂不新增：{exc}")
+            return []
+        if quota_result is None:
+            return ranked_symbols[:_AUTO_CANDIDATE_FALLBACK_LIMIT]
+
+        quota, quota_status = quota_result
+        quota_symbols = {_history_quota_key(symbol) for symbol in quota.used_symbols}
+        new_budget = self._auto_history_budget(
+            market,
+            quota_status,
+            int(quota.remaining),
+        )
+        selected: list[str] = []
+        for symbol in ranked_symbols:
+            reusable = (
+                symbol in self._seeded_symbols
+                or _history_quota_key(symbol) in quota_symbols
+            )
+            if reusable:
+                selected.append(symbol)
+            elif new_budget > 0:
+                selected.append(symbol)
+                new_budget -= 1
+        return selected
 
     def _record_intraday_selection(
         self,
@@ -472,6 +541,8 @@ class LiveRuntime:
         slow_k = self.params.intraday.slow_k_minutes
         mid_k = self.params.intraday.mid_k_minutes
         fast_k = self.params.intraday.fast_k_minutes
+        manual_keys = {item.symbol.upper() for item in (self._manual_intraday_symbols or ())}
+        triggered: list[tuple[float, int, str, Any, float]] = []
         for symbol in self.runtime_state.intraday_watchlist:
             if _market_from_symbol(symbol) != market or _has_position(snapshot, symbol):
                 continue
@@ -500,6 +571,11 @@ class LiveRuntime:
             )
             if signal.action not in ("enter_long", "enter_short"):
                 continue
+            manual_priority = 0 if symbol.upper() in manual_keys else 1
+            triggered.append((signal.confidence, manual_priority, symbol, signal, price))
+
+        triggered.sort(key=lambda item: (-item[0], item[1], item[2]))
+        for _, _, symbol, signal, price in triggered:
             is_short = signal.action == "enter_short"
             risk = self._live_risk(symbol, market, "open", at, is_short=is_short)
             if not risk.allowed:
@@ -644,7 +720,7 @@ class LiveRuntime:
         self.runtime_state.portfolio_watchlist = symbols
         if symbols:
             self.gateway.subscribe(symbols)
-            self._seed_history(symbols)
+            self._seed_history(symbols, source="portfolio")
         record_live_event(
             kind="selection",
             strategy_id="trend_portfolio",
@@ -765,20 +841,173 @@ class LiveRuntime:
         provider_symbols = getattr(self.data_provider, "symbols", [])
         return [item.symbol for item in provider_symbols]
 
-    def _seed_history(self, symbols: list[str]) -> None:
+    def _seed_history(
+        self,
+        symbols: list[str],
+        source: str = "system",
+        market: Market | None = None,
+    ) -> None:
         query = getattr(self.gateway, "query_history_minute", None)
-        if query is None:
+        pending_symbols = [
+            symbol
+            for symbol in _merge_unique(symbols)
+            if symbol not in self._seeded_symbols
+        ]
+        if query is None or not pending_symbols:
             return
+        symbols = pending_symbols
+
+        remaining_quota: int | None = None
+        quota_symbols: set[str] = set()
+        auto_budget: int | None = None
+        quota_status: dict[str, Any] | None = None
+        if getattr(self.gateway, "history_kline_quota", None) is not None:
+            try:
+                quota_result = self._refresh_history_quota_status()
+            except Exception as exc:
+                self._record_log("runtime", f"历史K线额度查询失败，本批停止补种：{exc}")
+                return
+            if quota_result is None:
+                return
+            quota, quota_status = quota_result
+            remaining_quota = int(quota.remaining)
+            quota_symbols = {_history_quota_key(symbol) for symbol in quota.used_symbols}
+            if source == "auto":
+                market = market or _market_from_symbol(symbols[0])
+                auto_budget = self._auto_history_budget(
+                    market,
+                    quota_status,
+                    remaining_quota,
+                )
+
         for symbol in symbols:
             if symbol in self._seeded_symbols:
+                continue
+            quota_key = _history_quota_key(symbol)
+            consumes_quota = remaining_quota is not None and quota_key not in quota_symbols
+            if consumes_quota and source == "auto" and (auto_budget or 0) <= 0:
+                self._record_log("runtime", f"{symbol} 历史补种跳过：自动选股今日新增额度已用完")
+                continue
+            if consumes_quota and source != "auto" and remaining_quota <= 0:
+                self._record_log("runtime", f"{symbol} 历史补种跳过：正股历史K线额度已用尽")
                 continue
             try:
                 bars = query(symbol)
                 self.market_data.seed_minute_bars(symbol, bars)
             except Exception as exc:
                 self._record_log("runtime", f"{symbol} 历史补种失败：{exc}")
+                if _is_history_quota_error(exc):
+                    self._record_log("runtime", "历史K线额度熔断：停止本批后续请求")
+                    break
                 continue
             self._seeded_symbols.add(symbol)
+            if consumes_quota:
+                now = datetime.now(timezone.utc)
+                usage_source = f"auto:{market}" if source == "auto" and market else source
+                record_history_kline_usage(symbol, usage_source, now, self.db_path)
+                remaining_quota -= 1
+                quota_symbols.add(quota_key)
+                if auto_budget is not None:
+                    auto_budget -= 1
+                if quota_status is not None:
+                    quota_status["used"] = int(quota_status["used"]) + 1
+                    quota_status["remaining"] = remaining_quota
+                    quota_status["daily_total_new"] = int(quota_status["daily_total_new"]) + 1
+                    if source == "auto":
+                        quota_status["daily_new_used"] = int(quota_status["daily_new_used"]) + 1
+                    quota_status["checked_at"] = now.isoformat()
+                    save_history_kline_quota_status(quota_status, self.db_path)
+
+    def _refresh_history_quota_status(
+        self,
+    ) -> tuple[HistoryKlineQuota, dict[str, Any]] | None:
+        quota_reader = getattr(self.gateway, "history_kline_quota", None)
+        if quota_reader is None:
+            return None
+        quota = quota_reader()
+        remaining = int(quota.remaining)
+        total = int(quota.used) + remaining
+        reserve = int(total * _HISTORY_QUOTA_RESERVE_RATIO)
+        budget = get_or_create_history_kline_daily_budget(
+            date.today(),
+            remaining,
+            reserve,
+            _HISTORY_QUOTA_WINDOW_DAYS,
+            self.db_path,
+        )
+        status: dict[str, Any] = {
+            "used": int(quota.used),
+            "remaining": remaining,
+            "total": total,
+            "reserve": reserve,
+            "opening_remaining": int(budget["opening_remaining"]),
+            "daily_new_limit": int(budget["daily_auto_limit"]),
+            "daily_new_used": count_history_kline_usage(
+                date.today(),
+                "auto",
+                self.db_path,
+                source_prefix=True,
+            ),
+            "daily_total_new": int(quota.requested_today),
+            "next_release_date": (
+                quota.next_release_date.isoformat() if quota.next_release_date else None
+            ),
+            "next_release_count": int(quota.next_release_count),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        save_history_kline_quota_status(status, self.db_path)
+        return quota, status
+
+    def _auto_history_budget(
+        self,
+        market: Market,
+        quota_status: dict[str, Any],
+        remaining_quota: int,
+    ) -> int:
+        daily_limit = int(quota_status["daily_new_limit"])
+        total_used = int(quota_status["daily_new_used"])
+        reserve = int(quota_status["reserve"])
+        shared_remaining = max(daily_limit - total_used, 0)
+        quota_remaining = max(remaining_quota - reserve, 0)
+        markets = list(dict.fromkeys(self.scheduler.markets))
+        if len(markets) <= 1 or market not in markets:
+            return min(shared_remaining, quota_remaining)
+
+        base, extra = divmod(daily_limit, len(markets))
+        market_limits = {
+            item: base + (1 if index >= len(markets) - extra else 0)
+            for index, item in enumerate(markets)
+        }
+        if market == markets[-1]:
+            market_remaining = shared_remaining
+        else:
+            market_used = count_history_kline_usage(
+                date.today(),
+                f"auto:{market}",
+                self.db_path,
+            )
+            market_remaining = max(market_limits[market] - market_used, 0)
+        return min(shared_remaining, market_remaining, quota_remaining)
+
+    def _maybe_refresh_history_quota_status(self, at: datetime) -> None:
+        if (
+            self._history_quota_next_refresh_at is not None
+            and at < self._history_quota_next_refresh_at
+        ):
+            return
+        if getattr(self.gateway, "history_kline_quota", None) is None:
+            return
+        try:
+            self._refresh_history_quota_status()
+        except Exception as exc:
+            self._history_quota_next_refresh_at = at + timedelta(
+                seconds=_HISTORY_QUOTA_RETRY_SECONDS
+            )
+            self._record_log("runtime", f"历史K线额度查询失败，稍后重试：{exc}")
+            return
+        self._history_quota_next_refresh_at = at + timedelta(
+            minutes=_HISTORY_QUOTA_REFRESH_MINUTES
+        )
 
     def _record_signal(
         self,
@@ -1151,6 +1380,29 @@ def _merge_unique(symbols: list[str]) -> list[str]:
         seen.add(key)
         merged.append(symbol)
     return merged
+
+
+def _history_quota_key(symbol: str) -> str:
+    value = symbol.strip().upper()
+    if value.startswith(("HK.", "US.")):
+        market, code = value.split(".", 1)
+    elif value.endswith((".HK", ".US")):
+        code, market = value.rsplit(".", 1)
+    else:
+        market = "HK" if value.isdigit() else "US"
+        code = value
+    if market == "HK" and code.isdigit():
+        code = code.zfill(5)
+    return f"{market}.{code}"
+
+
+def _is_history_quota_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "历史k线额度不足" in message
+        or "history kline quota" in message
+        or "history candlestick quota" in message
+    )
 
 
 def _combined_selection_mode(manual_symbols: list[str], auto_symbols: list[str]) -> str:

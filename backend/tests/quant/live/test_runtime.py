@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from quant.data.universe import SymbolInfo
-from quant.live.market_data import Bar
+from quant.live.market_data import Bar, BarAggregator
+from quant.live.gateway import HistoryKlineQuota
 from quant.live.params import LiveParams
 from quant.live.runtime import (
     DryRunGateway,
@@ -15,7 +16,7 @@ from quant.live.runtime import (
 from quant.live.runtime_state import StrategyRuntimeState
 from quant.live.scheduler import LiveScheduler
 from quant.live.state import LiveGatewayState
-from quant.live.store import list_live_events
+from quant.live.store import list_live_events, load_history_kline_quota_status
 from quant.screening.intraday_screener import IntradayCandidate
 
 
@@ -98,6 +99,94 @@ def test_build_live_runtime_rejects_unknown_broker(monkeypatch):
 
     with pytest.raises(ValueError, match="LIVE_RUNTIME_BROKER"):
         build_live_runtime_from_env(LiveGatewayState())
+
+
+def test_runtime_start_refreshes_history_quota_without_waiting_for_seed(tmp_path):
+    import asyncio
+
+    calls = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            calls.append(True)
+            return HistoryKlineQuota(
+                used=37,
+                remaining=63,
+                used_symbols=frozenset({"US.AAPL"}),
+                requested_today=4,
+            )
+
+    live_state = LiveGatewayState()
+    db_path = tmp_path / "live.sqlite3"
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=FakeMarketData(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=db_path,
+    )
+
+    async def scenario():
+        await runtime.start()
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+    assert calls == [True]
+    status = load_history_kline_quota_status(db_path)
+    assert status is not None
+    assert {key: status[key] for key in status if key != "checked_at"} == {
+        "used": 37,
+        "remaining": 63,
+        "total": 100,
+        "reserve": 20,
+        "opening_remaining": 63,
+        "daily_new_limit": 6,
+        "daily_new_used": 0,
+        "daily_total_new": 4,
+        "next_release_date": None,
+        "next_release_count": 0,
+    }
+
+
+def test_history_quota_refresh_retries_after_quote_connection_becomes_ready(tmp_path):
+    attempts = 0
+
+    class DelayedQuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("FUTU quote connection is not ready")
+            return HistoryKlineQuota(
+                used=100,
+                remaining=0,
+                used_symbols=frozenset({"US.AAPL"}),
+            )
+
+    live_state = LiveGatewayState()
+    db_path = tmp_path / "live.sqlite3"
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=DelayedQuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=FakeMarketData(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=db_path,
+    )
+    at = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
+
+    runtime._maybe_refresh_history_quota_status(at)
+    runtime._maybe_refresh_history_quota_status(at.replace(second=29))
+    assert attempts == 1
+    assert load_history_kline_quota_status(db_path) is None
+
+    runtime._maybe_refresh_history_quota_status(at.replace(second=30))
+    assert attempts == 2
+    assert load_history_kline_quota_status(db_path)["used"] == 100
 
 
 def test_build_live_runtime_uses_settings_file(monkeypatch, tmp_path):
@@ -206,12 +295,20 @@ def test_automatic_selection_keeps_only_highest_ranked_candidates(tmp_path):
                 for symbol, turnover in (("LOW", 6_000_000), ("MID", 30_000_000), ("HIGH", 200_000_000))
             ]
 
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(
+                used=75,
+                remaining=25,
+                used_symbols=frozenset({"US.MID"}),
+            )
+
     params = LiveParams()
-    params.update("intraday_macd", {"auto_min_score": 0.5, "max_auto_candidates": 2})
+    params.update("intraday_macd", {"auto_min_score": 0.5})
     live_state = LiveGatewayState()
     runtime = LiveRuntime(
         live_state=live_state,
-        gateway=DryRunGateway(live_state),
+        gateway=QuotaGateway(live_state),
         scheduler=LiveScheduler(markets=("US",)),
         data_provider=ManyCandidates(),
         market_data=FakeMarketData(),
@@ -226,6 +323,51 @@ def test_automatic_selection_keeps_only_highest_ranked_candidates(tmp_path):
     assert runtime.runtime_state.intraday_watchlist == ["HIGH", "MID"]
     event = list_live_events(kind="selection", db_path=tmp_path / "live.sqlite3")[0]
     assert event.payload["auto_symbols"] == ["HIGH", "MID"]
+
+
+def test_automatic_selection_reuses_quota_symbols_when_quota_is_full(tmp_path):
+    class ManyCandidates(FakeDataProvider):
+        def intraday_candidates(self):
+            return [
+                IntradayCandidate(
+                    symbol=symbol,
+                    market="US",
+                    avg_turnover=turnover,
+                    prev_amplitude_pct=4,
+                    price=100,
+                    halted=False,
+                    ex_dividend_soon=False,
+                    major_news=False,
+                )
+                for symbol, turnover in (("NEW", 200_000_000), ("USED", 30_000_000))
+            ]
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(
+                used=100,
+                remaining=0,
+                used_symbols=frozenset({"US.USED"}),
+            )
+
+    params = LiveParams()
+    params.update("intraday_macd", {"auto_min_score": 0.5})
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=("US",)),
+        data_provider=ManyCandidates(),
+        market_data=FakeMarketData(),
+        runtime_state=StrategyRuntimeState(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+        params=params,
+    )
+
+    runtime._run_intraday_premarket_scan("US", datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc))
+
+    assert runtime.runtime_state.intraday_watchlist == ["USED"]
 
 
 def test_runtime_catches_up_missed_us_premarket_scan(tmp_path):
@@ -280,7 +422,7 @@ def test_runtime_intraday_entry_calls_executor_and_updates_state(tmp_path, monke
 
     monkeypatch.setattr(
         "quant.live.runtime.evaluate_intraday_entry_signal",
-        lambda **kwargs: SimpleNamespace(action="enter_long"),
+        lambda **kwargs: SimpleNamespace(action="enter_long", confidence=1.0),
     )
 
     runtime._run_intraday_entries("US", datetime(2026, 6, 23, 14, 15, tzinfo=timezone.utc))
@@ -290,6 +432,25 @@ def test_runtime_intraday_entry_calls_executor_and_updates_state(tmp_path, monke
     assert len(snapshot["orders"]) == 1
     assert len(snapshot["trades"]) == 1
     assert snapshot["positions"][0].symbol == "AAPL"
+
+
+def test_runtime_intraday_entry_ranks_triggered_symbols_before_filling_slots(tmp_path, monkeypatch):
+    runtime, _gateway = _runtime(tmp_path)
+    runtime.runtime_state.intraday_watchlist = ["AAPL", "MSFT"]
+    runtime.params.update("intraday_macd", {"max_positions": 1})
+
+    monkeypatch.setattr(
+        "quant.live.runtime.evaluate_intraday_entry_signal",
+        lambda **kwargs: SimpleNamespace(
+            action="enter_long",
+            confidence={"AAPL": 0.70, "MSFT": 0.90}[kwargs["symbol"]],
+        ),
+    )
+
+    runtime._run_intraday_entries("US", datetime(2026, 6, 23, 14, 15, tzinfo=timezone.utc))
+
+    positions = runtime.live_state.snapshot()["positions"]
+    assert [position.symbol for position in positions] == ["MSFT"]
 
 
 def test_runtime_force_close_only_closes_owned_intraday_positions(tmp_path):
@@ -452,6 +613,211 @@ def test_seed_history_seed_minute_bars_failure_does_not_abort_second(tmp_path):
     assert market_data.minute_bars("MSFT")
 
 
+def test_seed_history_reuses_used_symbol_when_quota_is_full(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=100, remaining=0, used_symbols=frozenset({"US.AAPL"}))
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [Bar(symbol, datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc), 100, 100, 100, 100, 100)]
+
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+
+    runtime._seed_history(["AAPL", "MSFT"], source="manual")
+
+    assert calls == ["AAPL"]
+
+
+def test_run_once_seeds_current_position_from_reserved_quota(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=99, remaining=1, used_symbols=frozenset())
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [Bar(symbol, datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc), 100, 100, 100, 100, 100)]
+
+    live_state = LiveGatewayState()
+    gateway = QuotaGateway(live_state)
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=gateway,
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+    gateway.connect()
+    gateway.send_order("AAPL", "多", "开", price=100.0, volume=10)
+
+    runtime.run_once(datetime(2026, 7, 18, 9, 1, tzinfo=timezone.utc))
+
+    assert calls == ["AAPL"]
+
+
+def test_seed_history_manual_symbol_can_use_reserved_quota(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=99, remaining=1, used_symbols=frozenset())
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [Bar(symbol, datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc), 100, 100, 100, 100, 100)]
+
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+
+    runtime._seed_history(["AAPL"], source="manual")
+
+    assert calls == ["AAPL"]
+
+
+def test_seed_history_auto_uses_dynamic_daily_budget_and_reserve(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=0, remaining=100, used_symbols=frozenset())
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [Bar(symbol, datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc), 100, 100, 100, 100, 100)]
+
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+
+    runtime._seed_history([f"AUTO{i}" for i in range(12)], source="auto")
+
+    assert calls == [f"AUTO{i}" for i in range(11)]
+
+
+def test_seed_history_auto_budget_uses_opening_remaining_balance(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=50, remaining=50, used_symbols=frozenset())
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [Bar(symbol, datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc), 100, 100, 100, 100, 100)]
+
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+
+    runtime._seed_history([f"AUTO{i}" for i in range(6)], source="auto", market="US")
+
+    assert calls == [f"AUTO{i}" for i in range(4)]
+
+
+def test_seed_history_splits_shared_auto_budget_between_hk_and_us(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=0, remaining=100, used_symbols=frozenset())
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            return [Bar(symbol, datetime(2026, 6, 24, 9, 0, tzinfo=timezone.utc), 100, 100, 100, 100, 100)]
+
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=("HK", "US")),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+
+    runtime._seed_history([f"{index:05d}.HK" for index in range(1, 4)], source="auto", market="HK")
+    runtime._seed_history([f"US{index}" for index in range(1, 9)], source="auto", market="US")
+
+    assert calls == [
+        "00001.HK",
+        "00002.HK",
+        "00003.HK",
+        "US1",
+        "US2",
+        "US3",
+        "US4",
+        "US5",
+        "US6",
+        "US7",
+        "US8",
+    ]
+
+
+def test_seed_history_quota_error_stops_remaining_batch(tmp_path):
+    calls: list[str] = []
+
+    class QuotaGateway(DryRunGateway):
+        def history_kline_quota(self):
+            return HistoryKlineQuota(used=99, remaining=1, used_symbols=frozenset())
+
+        def query_history_minute(self, symbol, count=800, exchange=None):
+            calls.append(symbol)
+            raise RuntimeError("历史K线额度不足，请求失败（已用正股额度：100/100）")
+
+    live_state = LiveGatewayState()
+    runtime = LiveRuntime(
+        live_state=live_state,
+        gateway=QuotaGateway(live_state),
+        scheduler=LiveScheduler(markets=()),
+        data_provider=FakeDataProvider(),
+        market_data=BarAggregator(),
+        config=RuntimeConfig(enabled=True, dry_run=True),
+        db_path=tmp_path / "live.sqlite3",
+    )
+
+    runtime._seed_history(["AAPL", "MSFT"], source="manual")
+
+    assert calls == ["AAPL"]
+
+
 def test_three_period_momentum_detects_falling(tmp_path):
     runtime, _gateway = _runtime(tmp_path)
     # 先涨后加速下跌 → 三周期最后一根柱均低于上一根
@@ -488,7 +854,7 @@ def test_intraday_short_entry_for_shortable_symbol(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "quant.live.runtime.evaluate_intraday_entry_signal",
-        lambda **kwargs: SimpleNamespace(action="enter_short", side="short"),
+        lambda **kwargs: SimpleNamespace(action="enter_short", side="short", confidence=1.0),
     )
 
     runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))
@@ -506,7 +872,7 @@ def test_intraday_short_blocked_for_non_shortable(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "quant.live.runtime.evaluate_intraday_entry_signal",
-        lambda **kwargs: SimpleNamespace(action="enter_short", side="short"),
+        lambda **kwargs: SimpleNamespace(action="enter_short", side="short", confidence=1.0),
     )
 
     runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))
@@ -530,7 +896,10 @@ def test_runtime_uses_injected_params_for_entry(tmp_path, monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace(submitted=False, reasons=("x",))
 
-    monkeypatch.setattr("quant.live.runtime.evaluate_intraday_entry_signal", lambda **k: SimpleNamespace(action="enter_long"))
+    monkeypatch.setattr(
+        "quant.live.runtime.evaluate_intraday_entry_signal",
+        lambda **k: SimpleNamespace(action="enter_long", confidence=1.0),
+    )
     monkeypatch.setattr("quant.live.runtime.execute_intraday_entry", fake_execute)
 
     runtime._run_intraday_entries("US", datetime(2026, 6, 24, 14, 15, tzinfo=timezone.utc))

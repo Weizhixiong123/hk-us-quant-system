@@ -30,7 +30,6 @@ INTRADAY_PARAM_DEFAULTS: dict[str, int | float] = {
     "trailing_start_pct": 2.0,
     "trailing_stop_pct": 1.0,
     "auto_min_score": 0.65,
-    "max_auto_candidates": 40,
     "score_half_life_hours": 4.0,
     "shortable_bonus_pts": 0.05,
 }
@@ -66,7 +65,6 @@ MA_ATR_PARAM_DEFAULTS: dict[str, int | float] = {
     "min_price": 2.0,
     "min_turnover_rate": 0.0,
     "auto_min_score": 0.65,
-    "max_auto_candidates": 40,
     "score_half_life_hours": 4.0,
     "shortable_bonus_pts": 0.05,
 }
@@ -264,8 +262,8 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "slow_k_minutes",
         "mid_k_minutes",
         "fast_k_minutes",
-        "max_auto_candidates",
     }
+    intraday_params.pop("max_auto_candidates", None)
     for key, default in INTRADAY_PARAM_DEFAULTS.items():
         value = intraday_params.get(key, default)
         if key == "trailing_enabled":
@@ -291,8 +289,8 @@ def _normalized_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "max_positions",
         "open_after_minutes",
         "close_before_minutes",
-        "max_auto_candidates",
     }
+    ma_atr_params.pop("max_auto_candidates", None)
     for key, default in MA_ATR_PARAM_DEFAULTS.items():
         value = ma_atr_params.get(key, default)
         if key == "trailing_enabled":
@@ -494,5 +492,3 @@ def _validate(settings: Mapping[str, Any]) -> None:
         raise ValueError("盘前筛选参数不能小于 0")
     if not 0 <= intraday.get("auto_min_score", 0.65) <= 1:
         raise ValueError("自动选股评分门槛必须在 0 到 1 之间")
-    if not 1 <= intraday.get("max_auto_candidates", 40) <= 1000:
-        raise ValueError("自动候选数量上限必须在 1 到 1000 之间")

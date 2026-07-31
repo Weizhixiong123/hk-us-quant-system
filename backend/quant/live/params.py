@@ -22,7 +22,6 @@ class IntradayParams:
     score_half_life_hours: float = 4.0    # freshness 半衰期
     shortable_bonus_pts: float = 0.05    # shortable 标的 +0.05 flat bonus
     auto_min_score: float = 0.65         # 自动选股最低评分门槛(0~1)
-    max_auto_candidates: int = 40        # 每个市场自动候选数量上限
     # 盘前筛选参数
     open_after_minutes: int = 30         # 开盘后 N 分钟才允许开仓
     close_before_minutes: int = 90       # 收盘前 N 分钟停止开仓
@@ -97,7 +96,6 @@ class MaAtrIntradayParams:
     min_price: float = 2.0
     min_turnover_rate: float = 0.0
     auto_min_score: float = 0.65
-    max_auto_candidates: int = 40
     score_half_life_hours: float = 4.0
     shortable_bonus_pts: float = 0.05
 
@@ -182,8 +180,6 @@ def _validate_intraday(params: IntradayParams) -> None:
         raise ValueError("动态止盈参数必须在 0 到 100 之间")
     if not 0 <= params.auto_min_score <= 1:
         raise ValueError("自动选股评分门槛必须在 0 到 1 之间")
-    if not 1 <= params.max_auto_candidates <= 1000:
-        raise ValueError("自动候选数量上限必须在 1 到 1000 之间")
     if min(
         params.min_turnover,
         params.min_amplitude_pct,

@@ -12,6 +12,7 @@ from app.models.schemas import (
     BacktestResult,
     Candle,
     DashboardSnapshot,
+    HistoryKlineQuotaStatus,
     Order,
     ParamValue,
     Position,
@@ -33,6 +34,7 @@ from quant.live.store import (
     LiveEvent,
     list_live_events,
     live_db_path_for_mode,
+    load_history_kline_quota_status,
     load_position_risk_setting,
     save_position_risk_setting,
 )
@@ -481,7 +483,12 @@ class AppState:
                 trades=trades,
                 logs=self._live_logs(live_snapshot) + self.logs,
                 chart=self.chart,
+                history_kline_quota=self._history_kline_quota_status(),
             )
+
+    def _history_kline_quota_status(self) -> HistoryKlineQuotaStatus | None:
+        status = load_history_kline_quota_status(self._current_db_path())
+        return HistoryKlineQuotaStatus(**status) if status else None
 
     def risk_status(self, live_snapshot: dict | None = None) -> list[RiskRuleStatus]:
         live_snapshot = live_snapshot if live_snapshot is not None else self._live_snapshot()

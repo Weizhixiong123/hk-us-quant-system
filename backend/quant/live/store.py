@@ -267,6 +267,130 @@ def delete_position_risk_setting(
         )
 
 
+def record_history_kline_usage(
+    symbol: str,
+    source: str,
+    requested_at: datetime | None = None,
+    db_path: DbPath | None = None,
+) -> None:
+    path = _resolve_db_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    at = requested_at or datetime.now(timezone.utc)
+    local_day = at.astimezone().date() if at.tzinfo is not None else at.date()
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO history_kline_usage (
+                trading_day, symbol, source, requested_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (local_day.isoformat(), symbol.strip().upper(), source, at.isoformat()),
+        )
+
+
+def count_history_kline_usage(
+    trading_day: date,
+    source: str,
+    db_path: DbPath | None = None,
+    *,
+    source_prefix: bool = False,
+) -> int:
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return 0
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        operator = "LIKE" if source_prefix else "="
+        source_value = f"{source}%" if source_prefix else source
+        row = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM history_kline_usage
+            WHERE trading_day = ? AND source {operator} ?
+            """,
+            (trading_day.isoformat(), source_value),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_or_create_history_kline_daily_budget(
+    trading_day: date,
+    opening_remaining: int,
+    reserve: int,
+    window_days: int,
+    db_path: DbPath | None = None,
+) -> dict[str, int]:
+    path = _resolve_db_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        row = connection.execute(
+            """
+            SELECT opening_remaining, reserve, daily_auto_limit
+            FROM history_kline_daily_budget
+            WHERE trading_day = ?
+            """,
+            (trading_day.isoformat(),),
+        ).fetchone()
+        if row is None:
+            auto_capacity = max(int(opening_remaining) - int(reserve), 0)
+            daily_limit = (
+                max(auto_capacity // max(int(window_days), 1), 1)
+                if auto_capacity > 0
+                else 0
+            )
+            connection.execute(
+                """
+                INSERT INTO history_kline_daily_budget (
+                    trading_day, opening_remaining, reserve, daily_auto_limit
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    trading_day.isoformat(),
+                    int(opening_remaining),
+                    int(reserve),
+                    daily_limit,
+                ),
+            )
+            row = (int(opening_remaining), int(reserve), daily_limit)
+    return {
+        "opening_remaining": int(row[0]),
+        "reserve": int(row[1]),
+        "daily_auto_limit": int(row[2]),
+    }
+
+
+def save_history_kline_quota_status(
+    status: Mapping[str, Any],
+    db_path: DbPath | None = None,
+) -> None:
+    path = _resolve_db_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        connection.execute(
+            """
+            INSERT INTO history_kline_quota_status (id, payload)
+            VALUES (1, ?)
+            ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+            """,
+            (json.dumps(dict(status), ensure_ascii=False),),
+        )
+
+
+def load_history_kline_quota_status(db_path: DbPath | None = None) -> dict[str, Any] | None:
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return None
+    with sqlite3.connect(path) as connection:
+        _ensure_schema(connection)
+        row = connection.execute(
+            "SELECT payload FROM history_kline_quota_status WHERE id = 1"
+        ).fetchone()
+    return dict(json.loads(row[0])) if row else None
+
+
 def _resolve_db_path(db_path: DbPath | None) -> Path:
     if db_path is not None:
         return Path(db_path)
@@ -324,6 +448,35 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             active INTEGER NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (market, symbol)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS history_kline_usage (
+            trading_day TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            source TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            PRIMARY KEY (trading_day, symbol)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS history_kline_quota_status (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            payload TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS history_kline_daily_budget (
+            trading_day TEXT PRIMARY KEY,
+            opening_remaining INTEGER NOT NULL,
+            reserve INTEGER NOT NULL,
+            daily_auto_limit INTEGER NOT NULL
         )
         """
     )

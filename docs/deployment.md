@@ -140,13 +140,22 @@ curl http://127.0.0.1:8000/api/health
 安装 Nginx 反代：
 
 ```bash
+sudo apt-get install -y nginx apache2-utils
+sudo install -d -m 750 /etc/hk-us-quant/tls
+sudo htpasswd -cB /etc/nginx/hk-us-quant.htpasswd quantadmin
+sudo chown root:www-data /etc/nginx/hk-us-quant.htpasswd
+sudo chmod 640 /etc/nginx/hk-us-quant.htpasswd
 sudo cp deploy/linux/nginx-hk-us-quant.conf /etc/nginx/sites-available/hk-us-quant
+sudo sed -i 's/YOUR_DOMAIN/quant.example.com/g' /etc/nginx/sites-available/hk-us-quant
 sudo ln -s /etc/nginx/sites-available/hk-us-quant /etc/nginx/sites-enabled/hk-us-quant
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-生产环境应再配置 HTTPS，并仅通过防火墙开放 Nginx 的 80/443；OpenD 的 `11111`、`11112` 和 Telnet 运维端口不得暴露到公网。
+执行前将 `quant.example.com` 替换为真实域名，并将该域名的证书安装为
+`/etc/hk-us-quant/tls/fullchain.pem`、私钥安装为 `/etc/hk-us-quant/tls/privkey.pem`。
+配置自带 HTTPS、HTTP 跳转 HTTPS 和单用户 Basic Auth。仅通过安全组和防火墙开放 Nginx 的
+80/443；OpenD 的 `11111`、`11112` 和 Telnet 运维端口不得暴露到公网。
 
 ### 4.5 使用 Docker Compose 部署应用
 
@@ -159,11 +168,24 @@ docker compose up -d
 docker compose ps
 ```
 
+若使用 Docker Hub 私有镜像，在服务器 `.env` 中设置
+`IMAGE_REPOSITORY=你的用户名/hk-us-quant-system`，完成 `sudo docker login` 后执行：
+
+```bash
+sudo docker compose pull quant-app
+sudo docker compose up -d --no-build --pull never quant-app
+```
+
+本机发布脚本为 `deploy/docker/publish-image.ps1`；服务器带备份、健康检查和失败回滚的更新脚本为
+`deploy/linux/update-docker-image.sh`。具体命令见 `deploy/docker/README.md`。
+
 镜像采用多阶段构建：Node 阶段生成 Vue 的 `frontend/dist`，最终 Python 镜像由 FastAPI 同时提供页面、API 和 WebSocket。运行数据保存在命名卷 `hk-us-quant-data`。
 
 Compose 使用 Linux `host` 网络，使容器可以通过 `127.0.0.1:11111`、`127.0.0.1:11112` 连接宿主机 OpenD，同时 OpenD 仍可只监听本机。该配置用于 Ubuntu/Linux 服务器，不以 Docker Desktop 作为生产运行环境。
 
-FutuOpenD 不放进 Compose，仍使用前述 `futu-opend@.service` 管理。更多命令见 `deploy/docker/README.md`。
+FutuOpenD 不放进 Compose，仍使用前述 `futu-opend@.service` 管理。Compose 模式下，Uvicorn
+只监听宿主机 `127.0.0.1:8000`。备份和无覆盖恢复命令见 `deploy/docker/README.md`，对应脚本为
+`deploy/linux/backup-docker-volume.sh` 和 `deploy/linux/restore-docker-volume.sh`。
 
 ## 5. 上线检查
 

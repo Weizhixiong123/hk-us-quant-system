@@ -153,6 +153,20 @@ export interface Candle {
   volume: number;
 }
 
+export interface HistoryKlineQuotaStatus {
+  used: number;
+  remaining: number;
+  total: number;
+  reserve: number;
+  opening_remaining: number;
+  daily_new_limit: number;
+  daily_new_used: number;
+  daily_total_new: number;
+  next_release_date: string | null;
+  next_release_count: number;
+  checked_at: string;
+}
+
 export interface DashboardSnapshot {
   server_time: string;
   account: AccountSummary;
@@ -166,6 +180,7 @@ export interface DashboardSnapshot {
   trades: Trade[];
   logs: TradeLog[];
   chart: Candle[];
+  history_kline_quota: HistoryKlineQuotaStatus | null;
 }
 
 export interface BacktestRequest {
@@ -313,7 +328,6 @@ export interface IntradayParamsSettings {
   trailing_start_pct: number;
   trailing_stop_pct: number;
   auto_min_score: number;
-  max_auto_candidates: number;
 }
 
 export interface MaAtrIntradayParamsSettings {
@@ -347,7 +361,6 @@ export interface MaAtrIntradayParamsSettings {
   min_price: number;
   min_turnover_rate: number;
   auto_min_score: number;
-  max_auto_candidates: number;
   score_half_life_hours: number;
   shortable_bonus_pts: number;
 }

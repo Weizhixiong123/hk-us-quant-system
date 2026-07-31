@@ -735,6 +735,32 @@ function logTime(value: string): string {
               </div>
               <p>风控阈值</p>
             </article>
+            <article class="metric-card">
+              <div class="metric-icon">
+                <Database :size="26" />
+              </div>
+              <div v-if="dashboard?.history_kline_quota">
+                <span>历史 K 线额度</span>
+                <strong>{{ dashboard.history_kline_quota.used }}/{{ dashboard.history_kline_quota.total }}</strong>
+                <small>
+                  今日自动 {{ dashboard.history_kline_quota.daily_new_used }}/{{ dashboard.history_kline_quota.daily_new_limit }}
+                  · 全部新增 {{ dashboard.history_kline_quota.daily_total_new }}
+                </small>
+              </div>
+              <div v-else>
+                <span>历史 K 线额度</span>
+                <strong>--/--</strong>
+                <small>等待富途连接后查询</small>
+              </div>
+              <p v-if="dashboard?.history_kline_quota">
+                剩余 {{ dashboard.history_kline_quota.remaining }} · 预留 {{ dashboard.history_kline_quota.reserve }}
+                <template v-if="dashboard.history_kline_quota.next_release_date">
+                  · {{ dashboard.history_kline_quota.next_release_date.slice(5) }}
+                  预计释放 {{ dashboard.history_kline_quota.next_release_count }}
+                </template>
+              </p>
+              <p v-else>尚未获取</p>
+            </article>
           </section>
 
           <section class="ops-dashboard-grid">

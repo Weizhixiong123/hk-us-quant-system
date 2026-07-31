@@ -1,5 +1,6 @@
 import pandas as pd
 from quant.data.loaders import (
+    _FutuHistoryQuotaGuard,
     _SlidingWindowRateLimiter,
     _is_history_rate_limit_error,
     _to_futu_code,
@@ -27,6 +28,57 @@ def test_history_rate_limiter_waits_after_window_is_full():
 def test_history_rate_limit_error_detection():
     assert _is_history_rate_limit_error("获取历史K线频率太高，请求失败，每30秒最多60次")
     assert not _is_history_rate_limit_error("股票代码不存在")
+
+
+def test_history_quota_guard_reuses_existing_symbol_when_remaining_is_zero():
+    class QuoteContext:
+        def get_history_kl_quota(self, get_detail):
+            return 0, (
+                100,
+                0,
+                [{"code": "US.AAPL", "request_time": "2026-07-17 09:30:00"}],
+            )
+
+    guard = _FutuHistoryQuotaGuard()
+
+    assert guard.allow(QuoteContext(), "US.AAPL", 0) is True
+    assert guard.allow(QuoteContext(), "US.MSFT", 0) is False
+
+
+def test_history_quota_guard_limits_new_symbols_to_daily_average():
+    class QuoteContext:
+        def get_history_kl_quota(self, get_detail):
+            return 0, {"used_quota": 0, "remain_quota": 100, "detail_list": []}
+
+    guard = _FutuHistoryQuotaGuard()
+    allowed = [guard.allow(QuoteContext(), f"US.AUTO{i}", 0) for i in range(12)]
+
+    assert allowed == [True] * 11 + [False]
+
+
+def test_history_quota_guard_reduces_daily_budget_with_remaining_balance():
+    class QuoteContext:
+        def get_history_kl_quota(self, get_detail):
+            return 0, (50, 50, [])
+
+    guard = _FutuHistoryQuotaGuard()
+    allowed = [guard.allow(QuoteContext(), f"US.AUTO{i}", 0) for i in range(6)]
+
+    assert allowed == [True] * 4 + [False] * 2
+
+
+def test_history_quota_guard_queries_on_first_call_when_clock_starts_at_zero():
+    calls = []
+
+    class QuoteContext:
+        def get_history_kl_quota(self, get_detail):
+            calls.append(get_detail)
+            return 0, {"used_quota": 0, "remain_quota": 100, "detail_list": []}
+
+    guard = _FutuHistoryQuotaGuard(clock=lambda: 0.0)
+
+    assert guard.allow(QuoteContext(), "US.AAPL", 0) is True
+    assert calls == [True]
 
 
 def _stub_fetch(symbol, market, start, end):

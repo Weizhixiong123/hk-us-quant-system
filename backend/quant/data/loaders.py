@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from datetime import date, datetime
 from threading import Lock
 from typing import Callable
 
 import pandas as pd
 
 from quant.live.config import load_futu_config
+from quant.live.history_quota import unpack_history_kline_quota
 
 Fetcher = Callable[[str, str, str, str], pd.DataFrame]
 MinuteFetcher = Callable[[str, str, str, str, str], pd.DataFrame]
@@ -28,6 +30,8 @@ _FUTU_INTERVALS = {
     "30m": "K_30M",
     "60m": "K_60M",
 }
+_HISTORY_QUOTA_WINDOW_DAYS = 7
+_HISTORY_QUOTA_RESERVE_RATIO = 0.20
 
 
 class _SlidingWindowRateLimiter:
@@ -64,6 +68,61 @@ class _SlidingWindowRateLimiter:
 
 
 _FUTU_HISTORY_LIMITER = _SlidingWindowRateLimiter(60, 30.0)
+
+
+class _FutuHistoryQuotaGuard:
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._lock = Lock()
+        self._clock = clock
+        self._checked_at: float | None = None
+        self._remaining = 0
+        self._reserve = 0
+        self._daily_limit = 0
+        self._used_today = 0
+        self._used_symbols: set[str] = set()
+        self._budget_day: date | None = None
+
+    def allow(self, quote_ctx: object, code: str, ret_ok: int) -> bool:
+        normalized = code.strip().upper()
+        with self._lock:
+            now = self._clock()
+            if self._checked_at is None or now - self._checked_at >= 30.0:
+                ret, data = quote_ctx.get_history_kl_quota(get_detail=True)  # type: ignore[attr-defined]
+                if ret != ret_ok:
+                    raise RuntimeError(f"富途历史K线额度查询失败：{data}")
+                used, self._remaining, details = unpack_history_kline_quota(data)
+                total = used + self._remaining
+                self._reserve = int(total * _HISTORY_QUOTA_RESERVE_RATIO)
+                today = date.today()
+                if self._budget_day != today:
+                    auto_capacity = max(self._remaining - self._reserve, 0)
+                    self._daily_limit = (
+                        max(auto_capacity // _HISTORY_QUOTA_WINDOW_DAYS, 1)
+                        if auto_capacity > 0
+                        else 0
+                    )
+                    self._budget_day = today
+                self._used_symbols = {
+                    str(item.get("code", "")).upper()
+                    for item in details
+                    if item.get("code")
+                }
+                self._used_today = sum(
+                    1 for item in details if _quota_request_date(item.get("request_time")) == today
+                )
+                self._checked_at = now
+
+            if normalized in self._used_symbols:
+                return True
+            if self._remaining <= self._reserve or self._used_today >= self._daily_limit:
+                return False
+            self._remaining -= 1
+            self._used_today += 1
+            self._used_symbols.add(normalized)
+            return True
+
+
+_FUTU_HISTORY_QUOTA_GUARD = _FutuHistoryQuotaGuard()
 
 
 def _log_data_loader(message: str) -> None:
@@ -122,6 +181,8 @@ def _fetch_futu_kline(
     )
     quote_ctx = OpenQuoteContext(host=config.host, port=config.port)
     try:
+        if not _FUTU_HISTORY_QUOTA_GUARD.allow(quote_ctx, code, RET_OK):
+            raise RuntimeError(f"富途历史K线预算保护：跳过新增股票 {code}")
         frames: list[pd.DataFrame] = []
         page_req_key = None
         page_count = 0
@@ -179,6 +240,15 @@ def _fetch_futu_kline(
 def _is_history_rate_limit_error(error: object) -> bool:
     message = str(error).lower()
     return any(token in message for token in ("频率", "每30秒最多60次", "frequency", "rate limit"))
+
+
+def _quota_request_date(value: object) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return None
 
 
 def _to_futu_code(symbol: str, market: str) -> str:

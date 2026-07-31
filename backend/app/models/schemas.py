@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -155,6 +155,20 @@ class Candle(BaseModel):
     volume: int
 
 
+class HistoryKlineQuotaStatus(BaseModel):
+    used: int
+    remaining: int
+    total: int
+    reserve: int
+    opening_remaining: int = 0
+    daily_new_limit: int
+    daily_new_used: int
+    daily_total_new: int = 0
+    next_release_date: date | None = None
+    next_release_count: int = 0
+    checked_at: datetime
+
+
 class DashboardSnapshot(BaseModel):
     server_time: datetime
     account: AccountSummary
@@ -168,6 +182,7 @@ class DashboardSnapshot(BaseModel):
     trades: list[Trade]
     logs: list[TradeLog]
     chart: list[Candle]
+    history_kline_quota: HistoryKlineQuotaStatus | None = None
 
 
 class StrategyToggleRequest(BaseModel):
@@ -323,7 +338,6 @@ class IntradayParamsSettings(BaseModel):
     trailing_start_pct: float = Field(default=2.0, ge=0, le=100, description="动态止盈启动浮盈(%)")
     trailing_stop_pct: float = Field(default=1.0, ge=0, le=100, description="动态止盈回撤(%)")
     auto_min_score: float = Field(default=0.65, ge=0, le=1, description="自动选股最低评分阈值")
-    max_auto_candidates: int = Field(default=40, ge=1, le=1000, description="每个市场自动候选数量上限")
 
 
 class MaAtrIntradayParamsSettings(BaseModel):
@@ -365,7 +379,6 @@ class MaAtrIntradayParamsSettings(BaseModel):
     min_price: float = Field(default=2.0, ge=0, description="股价下限(元)")
     min_turnover_rate: float = Field(default=0.0, ge=0, le=100, description="换手率下限(%)")
     auto_min_score: float = Field(default=0.65, ge=0, le=1, description="自动选股最低评分阈值")
-    max_auto_candidates: int = Field(default=40, ge=1, le=1000, description="每个市场自动候选数量上限")
 
 
 class SymbolNameLookup(BaseModel):

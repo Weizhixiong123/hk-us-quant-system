@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import socket
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 
 from quant.live.config import FutuGatewayConfig, TigerGatewayConfig
+from quant.live.history_quota import unpack_history_kline_quota
 from quant.live.market_data import Bar
 from quant.live.state import LiveGatewayState
 from quant.live.translate import (
@@ -21,6 +23,16 @@ _FUTU_GATEWAY_NAME = "FUTU"
 _TIGER_GATEWAY_NAME = "TIGER"
 _FUTU_US_DEFAULT_EXCHANGE = "SMART"
 _TIGER_US_DEFAULT_EXCHANGE = "NASDAQ"
+
+
+@dataclass(frozen=True)
+class HistoryKlineQuota:
+    used: int
+    remaining: int
+    used_symbols: frozenset[str]
+    requested_today: int = 0
+    next_release_date: date | None = None
+    next_release_count: int = 0
 
 
 def _check_tcp_endpoint(host: str, port: int, timeout: float = 1.0) -> None:
@@ -222,6 +234,42 @@ class FutuLiveGateway:
         _install_pandas_append_compat()
         raw_bars = main_engine.query_history(req, gateway_name) or []
         return _bars_from_vnpy(symbol, raw_bars)[-count:]
+
+    def history_kline_quota(self) -> HistoryKlineQuota:
+        main_engine, gateway_name = self._require_futu_gateway(self.config.market)
+        gateway = main_engine.get_gateway(gateway_name)
+        quote_ctx = getattr(gateway, "quote_ctx", None)
+        if quote_ctx is None:
+            raise RuntimeError("FUTU quote connection is not ready")
+
+        ret, data = quote_ctx.get_history_kl_quota(get_detail=True)
+        if ret != 0:
+            raise RuntimeError(f"富途历史K线额度查询失败：{data}")
+        used, remaining, details = unpack_history_kline_quota(data)
+        release_dates = [
+            requested_at + timedelta(days=7)
+            for item in details
+            if (requested_at := _history_request_date(item.get("request_time"))) is not None
+        ]
+        next_release_date = min(release_dates, default=None)
+        return HistoryKlineQuota(
+            used=used,
+            remaining=remaining,
+            used_symbols=frozenset(
+                str(item.get("code", "")).upper()
+                for item in details
+                if item.get("code")
+            ),
+            requested_today=sum(
+                1
+                for item in details
+                if _history_request_date(item.get("request_time")) == datetime.now().date()
+            ),
+            next_release_date=next_release_date,
+            next_release_count=(
+                release_dates.count(next_release_date) if next_release_date is not None else 0
+            ),
+        )
 
     def close(self) -> None:
         if self._main_engine is not None:
@@ -536,6 +584,15 @@ def _clean_symbol(symbol: str) -> str:
     if (market == "HK" or (not market and value.isdigit())) and value.isdigit():
         return value.zfill(5)
     return value
+
+
+def _history_request_date(value: object) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return None
 
 
 def _futu_symbol(code: str, market: str) -> str:

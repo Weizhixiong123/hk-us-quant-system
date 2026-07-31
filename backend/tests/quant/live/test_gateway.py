@@ -180,6 +180,47 @@ def test_futu_subscribe_uses_quote_only():
     assert calls == [("US.AAPL", "QUOTE", True)]
 
 
+def test_futu_history_kline_quota_returns_used_symbol_details():
+    from quant.live.config import FutuGatewayConfig
+    from quant.live.gateway import FutuLiveGateway
+    from quant.live.state import LiveGatewayState
+
+    class _QuoteContext:
+        def get_history_kl_quota(self, get_detail):
+            assert get_detail is True
+            return 0, (
+                2,
+                98,
+                [
+                    {"code": "HK.00700", "request_time": "2026-07-15 09:30:00"},
+                    {"code": "US.AAPL", "request_time": "2026-07-17 09:30:00"},
+                ],
+            )
+
+    class _Gateway:
+        quote_ctx = _QuoteContext()
+
+    class _MainEngine:
+        def get_gateway(self, name):
+            assert name == "FUTU_HK"
+            return _Gateway()
+
+    config = FutuGatewayConfig(
+        "127.0.0.1", 11111, "SIMULATE", "HK", ("HK",), True, False
+    )
+    gateway = FutuLiveGateway(config, LiveGatewayState())
+    gateway._main_engine = _MainEngine()
+    gateway._gateway_names = {"HK": "FUTU_HK"}
+
+    quota = gateway.history_kline_quota()
+
+    assert quota.used == 2
+    assert quota.remaining == 98
+    assert quota.used_symbols == frozenset({"HK.00700", "US.AAPL"})
+    assert quota.next_release_date.isoformat() == "2026-07-22"
+    assert quota.next_release_count == 1
+
+
 def test_futu_routes_each_market_to_its_own_gateway():
     assert _futu_gateway_name("HK") == "FUTU_HK"
     assert _futu_gateway_name("US") == "FUTU_US"

@@ -7,8 +7,17 @@ services:
       dockerfile: Dockerfile
       args:
         INSTALL_BROKER_DEPS: ${INSTALL_BROKER_DEPS:-1}
-    image: hk-us-quant-system:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPOSITORY:-hk-us-quant-system}:${IMAGE_TAG:-latest}
     network_mode: host
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app.main:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8000"
     init: true
     environment:
       APP_ENV: production
@@ -29,4 +38,4 @@ services:
 
 volumes:
   quant-data:
-    name: hk-us-quant-data
+    name: ${DATA_VOLUME_NAME:-hk-us-quant-data}

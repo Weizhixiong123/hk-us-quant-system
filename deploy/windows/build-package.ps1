@@ -3,10 +3,15 @@ param(
     [string]$PackageName = "hk-us-quant-client",
     [string]$OutputDir = "",
     [switch]$SkipFrontendBuild,
-    [switch]$NoRuntime
+    [switch]$NoRuntime,
+    [switch]$ReuseRuntime
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($NoRuntime -and $ReuseRuntime) {
+    throw "-NoRuntime and -ReuseRuntime cannot be used together."
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptDir "..\..")).Path
@@ -85,15 +90,18 @@ if (Test-Path -LiteralPath $packageRoot) {
         }
     }
 
-    @(
+    $refreshItems = @(
         "backend",
         "frontend",
-        "runtime",
         "start.bat",
         "stop.bat",
         "repair-runtime.bat",
         "README-local-deploy.md"
-    ) | ForEach-Object {
+    )
+    if (-not $ReuseRuntime) {
+        $refreshItems += "runtime"
+    }
+    $refreshItems | ForEach-Object {
         Remove-InRelease (Join-Path $packageRoot $_)
     }
 }
@@ -116,7 +124,13 @@ Copy-RequiredItem (Join-Path $scriptDir "stop.bat") $packageRoot
 Copy-RequiredItem (Join-Path $scriptDir "repair-runtime.bat") $packageRoot
 Copy-RequiredItem (Join-Path $scriptDir "README-local-deploy.md") $packageRoot
 
-if (-not $NoRuntime) {
+if ($ReuseRuntime) {
+    if (-not (Test-Path -LiteralPath (Join-Path $packageRoot "runtime\Scripts\python.exe"))) {
+        throw "Existing package runtime was not found; rebuild without -ReuseRuntime."
+    }
+    Write-Step "Reusing existing Python runtime."
+}
+elseif (-not $NoRuntime) {
     $venv = Join-Path $repoRoot "backend\.venv"
     if (Test-Path -LiteralPath (Join-Path $venv "Scripts\python.exe")) {
         Write-Step "Copying Python runtime (this may take several minutes)..."

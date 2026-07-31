@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
-import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
@@ -16,6 +17,16 @@ from app.services.state import AppState
 from quant.live.params import LiveParams
 from quant.live.runtime_manager import RuntimeManager
 from quant.live.state import LiveGatewayState
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_validation_errors(exc: RequestValidationError) -> list[dict]:
+    """Return field errors without echoing request values into logs or responses."""
+    return [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in exc.errors()
+    ]
 
 
 def create_app() -> FastAPI:
@@ -53,32 +64,26 @@ def create_app() -> FastAPI:
     )
     app.include_router(router, prefix="/api")
 
-    # 把 422 校验失败的具体字段级错误打到日志,便于定位是哪条 manual_symbol / 哪个字段不合规。
-    # 同时把 detail 原样返回给前端,前端可直接展示。
-    from fastapi.exceptions import RequestValidationError
-    from fastapi.responses import JSONResponse
-    import logging as _logging
-
-    _log = _logging.getLogger("app.api.routes")
-
     @app.exception_handler(RequestValidationError)
     async def _log_unprocessable(request: Request, exc: RequestValidationError):
-        _log.warning(
+        errors = _safe_validation_errors(exc)
+        logger.warning(
             "422 Unprocessable Content %s %s: %s",
             request.method,
             request.url.path,
-            exc.errors(),
+            errors,
         )
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+        return JSONResponse(status_code=422, content={"detail": errors})
 
-    # 临时诊断:把未处理异常的完整 traceback 直接返回到响应,方便在浏览器排查 500。
-    # 定位修复后应移除这段。 RequestValidationError 由上面的专用 handler 处理。
     @app.exception_handler(Exception)
-    async def _debug_traceback_handler(request: Request, exc: Exception):
-        if isinstance(exc, RequestValidationError):
-            raise exc
-        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        return PlainTextResponse(detail, status_code=500)
+    async def _internal_server_error(request: Request, exc: Exception):
+        logger.error(
+            "Unhandled exception for %s %s",
+            request.method,
+            request.url.path,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
     frontend_dist = _frontend_dist_dir()
     if frontend_dist is not None:

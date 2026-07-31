@@ -149,3 +149,16 @@ def test_intraday_params_are_persisted_and_validated(tmp_path):
 
     with pytest.raises(ValueError, match="快线周期必须小于慢线周期"):
         save_live_settings({"intraday_params": {"fast_ema": 30}}, path)
+
+
+def test_removed_candidate_limit_is_cleaned_from_saved_settings(tmp_path):
+    settings = save_live_settings(
+        {
+            "intraday_params": {"max_auto_candidates": 40},
+            "ma_atr_intraday_params": {"max_auto_candidates": 40},
+        },
+        tmp_path / "live-settings.json",
+    )
+
+    assert "max_auto_candidates" not in settings["intraday_params"]
+    assert "max_auto_candidates" not in settings["ma_atr_intraday_params"]
